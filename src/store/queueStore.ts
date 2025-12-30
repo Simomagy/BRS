@@ -2,7 +2,6 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { QueueItem, QueueSettings, QueueState } from '@/types/queue';
 import { v4 as uuidv4 } from 'uuid';
-import { queueProcessor } from '@/services/queueProcessor';
 
 const DEFAULT_SETTINGS: QueueSettings = {
   autoStart: false,
@@ -17,8 +16,6 @@ interface QueueStore extends QueueState {
   removeItem: (id: string) => void;
   updateItem: (id: string, updates: Partial<QueueItem>) => void;
   reorderItems: (items: QueueItem[]) => void;
-  startProcessing: () => void;
-  stopProcessing: () => void;
   updateSettings: (settings: Partial<QueueSettings>) => void;
 
   // Azioni avanzate
@@ -73,17 +70,6 @@ export const useQueueStore = create<QueueStore>()(
 
       reorderItems: (items) => {
         set({ items });
-      },
-
-      startProcessing: async () => {
-        queueProcessor.setMaxConcurrent(get().settings.maxConcurrent);
-        await queueProcessor.startProcessing();
-        set({ isProcessing: true });
-      },
-
-      stopProcessing: () => {
-        queueProcessor.stopProcessing();
-        set({ isProcessing: false });
       },
 
       updateSettings: (settings) => {
@@ -221,41 +207,3 @@ export const useQueueStore = create<QueueStore>()(
   )
 );
 
-// Funzione per processare la coda
-const processQueue = async () => {
-  const state = useQueueStore.getState();
-  const { items, isProcessing } = state;
-
-  if (!isProcessing || items.length === 0) return;
-
-  // Trova il prossimo elemento da processare
-  const nextItem = items.find(
-    (item) =>
-      item.status === 'pending' &&
-      (!item.scheduledTime || new Date(item.scheduledTime) <= new Date()) &&
-      (!item.dependencies || item.dependencies.every((depId) =>
-        items.find((d) => d.id === depId)?.status === 'completed'
-      ))
-  );
-
-  if (!nextItem) return;
-
-  // Aggiorna lo stato dell'elemento
-  useQueueStore.getState().updateItem(nextItem.id, { status: 'running' });
-
-  try {
-    // Esegui il comando
-    // TODO: Implementare l'esecuzione effettiva del comando
-    await new Promise((resolve) => setTimeout(resolve, 1000)); // Simulazione
-
-    // Aggiorna lo stato dell'elemento
-    useQueueStore.getState().updateItem(nextItem.id, { status: 'completed' });
-
-    // Processa il prossimo elemento
-    processQueue();
-  } catch (error) {
-    // Gestisci l'errore
-    useQueueStore.getState().updateItem(nextItem.id, { status: 'failed' });
-    processQueue();
-  }
-};

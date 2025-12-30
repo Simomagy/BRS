@@ -3,6 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { useQueueStore } from '@/store/queueStore';
 import { QueueItem } from '@/types/queue';
+import { toast } from 'sonner';
+import { queueProcessor } from '@/services/queueProcessor';
 import {
 	Play,
 	Square,
@@ -695,8 +697,6 @@ const QueuePanel: React.FC = () => {
 	const {
 		items,
 		isProcessing,
-		startProcessing,
-		stopProcessing,
 		removeItem,
 		updatePriority,
 		addDependency,
@@ -727,12 +727,12 @@ const QueuePanel: React.FC = () => {
 
 	const handleStartStop = () => {
 		if (isProcessing) {
-			stopProcessing();
+			queueProcessor.stopProcessing();
 			toast.info('Queue Processing Stopped', {
 				description: 'The queue processing has been stopped.',
 			});
 		} else {
-			startProcessing();
+			queueProcessor.startProcessing();
 			toast.info('Queue Processing Started', {
 				description: 'The queue processing has started.',
 			});
