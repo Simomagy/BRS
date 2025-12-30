@@ -3,6 +3,18 @@
  * Modulo critico per la gestione dei processi Blender
  */
 
+// Mock dei moduli Electron - DEVE essere prima di require
+jest.mock('electron', () => ({
+  ipcMain: {
+    handle: jest.fn(),
+    on: jest.fn(),
+    removeHandler: jest.fn()
+  }
+}));
+
+jest.mock('child_process');
+jest.mock('fs');
+
 const RenderManager = require('../../../electron/services/render-manager');
 const {
   createMockProcess,
@@ -17,18 +29,6 @@ const {
   createMockBlenderCommand
 } = require('../../setup/test-utils');
 
-// Mock dei moduli Electron
-jest.mock('electron', () => ({
-  ipcMain: {
-    handle: jest.fn(),
-    on: jest.fn(),
-    removeHandler: jest.fn()
-  }
-}));
-
-jest.mock('child_process');
-jest.mock('fs');
-
 const fs = require('fs');
 
 describe('RenderManager', () => {
@@ -36,14 +36,18 @@ describe('RenderManager', () => {
   let mockSender;
 
   beforeEach(() => {
-    renderManager = new RenderManager();
-    mockSender = createMockSender();
+    // Clear all mocks
+    jest.clearAllMocks();
 
     // Reset mock fs
     fs.existsSync = jest.fn().mockReturnValue(false);
 
     // Reset mock spawn
     mockSpawn.mockClear();
+
+    // Create new instance
+    renderManager = new RenderManager();
+    mockSender = createMockSender();
   });
 
   afterEach(() => {

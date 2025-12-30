@@ -12,7 +12,9 @@ jest.mock('electron', () => ({
   }
 }));
 
-jest.mock('fs/promises');
+jest.mock('fs/promises', () => ({
+  readFile: jest.fn()
+}));
 
 const { ipcMain } = require('electron');
 const presetHandlers = require('../../../electron/handlers/preset-handlers');
@@ -27,6 +29,10 @@ describe('Preset Handlers', () => {
     store = new MockStore();
     registeredHandlers = {};
 
+    // Reset e setup mock fs/promises
+    fsPromises.readFile.mockReset();
+    fsPromises.readFile.mockResolvedValue('{}');
+
     // Cattura tutti gli handler registrati
     ipcMain.handle.mockImplementation((channel, handler) => {
       registeredHandlers[channel] = handler;
@@ -34,9 +40,6 @@ describe('Preset Handlers', () => {
 
     // Registra gli handler
     presetHandlers.register(store);
-
-    // Setup mock per fs/promises
-    fsPromises.readFile.mockClear();
   });
 
   describe('Handler Registration', () => {

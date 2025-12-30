@@ -186,7 +186,7 @@ describe('queueStore', () => {
       expect(state.items[0].progress).toBe(50);
     });
 
-    it('should update updatedAt timestamp', () => {
+    it('should update updatedAt timestamp', async () => {
       const { addItem, updateItem } = useQueueStore.getState();
 
       addItem({ name: 'Test', command: 'cmd', priority: 1 });
@@ -194,12 +194,12 @@ describe('queueStore', () => {
       const originalUpdatedAt = useQueueStore.getState().items[0].updatedAt;
 
       // Small delay to ensure timestamp changes
-      setTimeout(() => {
-        updateItem(itemId, { status: 'running' });
+      await new Promise(resolve => setTimeout(resolve, 10));
 
-        const state = useQueueStore.getState();
-        expect(state.items[0].updatedAt).not.toBe(originalUpdatedAt);
-      }, 10);
+      updateItem(itemId, { status: 'running' });
+
+      const state = useQueueStore.getState();
+      expect(state.items[0].updatedAt).not.toBe(originalUpdatedAt);
     });
 
     it('should preserve unchanged properties', () => {
@@ -295,12 +295,15 @@ describe('queueStore', () => {
       expect(state.items[0].priority).toBe(5);
     });
 
-    it('should update updatedAt timestamp', () => {
+    it('should update updatedAt timestamp', async () => {
       const { addItem, updatePriority } = useQueueStore.getState();
 
       addItem({ name: 'Test', command: 'cmd', priority: 1 });
       const itemId = useQueueStore.getState().items[0].id;
       const originalUpdatedAt = useQueueStore.getState().items[0].updatedAt;
+
+      // Small delay to ensure timestamp changes
+      await new Promise(resolve => setTimeout(resolve, 10));
 
       updatePriority(itemId, 5);
 
@@ -435,7 +438,7 @@ describe('queueStore', () => {
       expect(state.items[2].name).toBe('Low');
     });
 
-    it('should use creation time as tie-breaker', () => {
+    it('should use creation time as tie-breaker', async () => {
       const { addItem, optimizeQueue } = useQueueStore.getState();
 
       addItem({
@@ -445,19 +448,19 @@ describe('queueStore', () => {
       });
 
       // Small delay to ensure different timestamp
-      setTimeout(() => {
-        addItem({
-          name: 'Second',
-          command: 'cmd',
-          priority: 1
-        });
+      await new Promise(resolve => setTimeout(resolve, 10));
 
-        optimizeQueue();
+      addItem({
+        name: 'Second',
+        command: 'cmd',
+        priority: 1
+      });
 
-        const state = useQueueStore.getState();
-        expect(state.items[0].name).toBe('First');
-        expect(state.items[1].name).toBe('Second');
-      }, 10);
+      optimizeQueue();
+
+      const state = useQueueStore.getState();
+      expect(state.items[0].name).toBe('First');
+      expect(state.items[1].name).toBe('Second');
     });
   });
 

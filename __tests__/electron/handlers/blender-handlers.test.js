@@ -12,8 +12,22 @@ jest.mock('electron', () => ({
   }
 }));
 
-jest.mock('fs');
-jest.mock('fs/promises');
+jest.mock('fs', () => ({
+  existsSync: jest.fn(),
+  statSync: jest.fn(),
+  constants: {
+    S_IXUSR: 0o100
+  },
+  promises: {
+    readdir: jest.fn().mockResolvedValue([]),
+    readFile: jest.fn().mockResolvedValue('')
+  }
+}));
+
+jest.mock('fs/promises', () => ({
+  readdir: jest.fn().mockResolvedValue([]),
+  readFile: jest.fn().mockResolvedValue('')
+}));
 
 const { ipcMain } = require('electron');
 const blenderHandlers = require('../../../electron/handlers/blender-handlers');
@@ -33,6 +47,15 @@ describe('Blender Handlers', () => {
     };
     registeredHandlers = {};
 
+    // Reset e setup mock fs
+    fs.existsSync.mockReturnValue(false);
+    fs.statSync.mockReturnValue({
+      isFile: () => false,
+      mode: 0o100644
+    });
+    fs.promises.readdir.mockResolvedValue([]);
+    fsPromises.readdir.mockResolvedValue([]);
+
     // Cattura tutti gli handler registrati
     ipcMain.handle.mockImplementation((channel, handler) => {
       registeredHandlers[channel] = handler;
@@ -40,11 +63,6 @@ describe('Blender Handlers', () => {
 
     // Registra gli handler
     blenderHandlers.register(store, mockRenderManager);
-
-    // Reset mock
-    fs.existsSync.mockClear();
-    fs.statSync.mockClear();
-    fsPromises.readdir.mockClear();
   });
 
   afterEach(() => {
@@ -85,6 +103,7 @@ describe('Blender Handlers', () => {
                  path.includes('blender.exe');
         });
 
+        fs.promises.readdir.mockResolvedValue(['Blender 4.2']);
         fsPromises.readdir.mockResolvedValue(['Blender 4.2']);
 
         const handler = registeredHandlers['detect-blender'];
@@ -105,6 +124,11 @@ describe('Blender Handlers', () => {
 
       it('should handle multiple Blender versions', async () => {
         fs.existsSync.mockReturnValue(true);
+        fs.promises.readdir.mockResolvedValue([
+          'Blender 4.2',
+          'Blender 3.6',
+          'Blender 4.0'
+        ]);
         fsPromises.readdir.mockResolvedValue([
           'Blender 4.2',
           'Blender 3.6',
@@ -141,6 +165,7 @@ describe('Blender Handlers', () => {
 
       it('should find Blender in Applications', async () => {
         fs.existsSync.mockReturnValue(true);
+        fs.promises.readdir.mockResolvedValue(['Blender.app', 'Blender 4.2.app']);
         fsPromises.readdir.mockResolvedValue(['Blender.app', 'Blender 4.2.app']);
 
         const handler = registeredHandlers['detect-blender'];
@@ -151,6 +176,7 @@ describe('Blender Handlers', () => {
 
       it('should check both /Applications and ~/Applications', async () => {
         fs.existsSync.mockReturnValue(true);
+        fs.promises.readdir.mockResolvedValue(['Blender.app']);
         fsPromises.readdir.mockResolvedValue(['Blender.app']);
 
         const handler = registeredHandlers['detect-blender'];
@@ -202,6 +228,7 @@ describe('Blender Handlers', () => {
           isFile: () => true,
           mode: 0o100755
         });
+        fs.promises.readdir.mockResolvedValue(['blender-4.2', 'blender-3.6']);
         fsPromises.readdir.mockResolvedValue(['blender-4.2', 'blender-3.6']);
 
         const handler = registeredHandlers['detect-blender'];
