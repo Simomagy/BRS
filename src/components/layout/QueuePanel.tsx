@@ -24,7 +24,6 @@ import {
 	Info,
 } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
-import { toast } from 'sonner';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
 	DragDropContext,
