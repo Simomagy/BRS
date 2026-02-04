@@ -109,7 +109,7 @@ export interface ElectronAPI {
   fileExists: (filePath: string) => Promise<boolean>;
   // Close confirmation API
   confirmCloseApp: () => Promise<boolean>;
-  
+
   // Mobile Companion Server APIs
   mobileServerStart: () => Promise<{ success: boolean; status?: MobileServerStatus; error?: string }>;
   mobileServerStop: () => Promise<{ success: boolean; error?: string }>;
@@ -119,12 +119,29 @@ export interface ElectronAPI {
   getPairedDevices: () => Promise<{ success: boolean; devices?: PairedDevice[]; error?: string }>;
   removePairedDevice: (deviceId: string) => Promise<{ success: boolean; removed?: boolean; error?: string }>;
   getConnectedDevices: () => Promise<{ success: boolean; devices?: ConnectedDevice[]; error?: string }>;
-  
+
   // Mobile Companion Server Event Listeners
   onMobileServerStatus: (callback: (status: MobileServerStatus) => void) => void;
   onDevicePaired: (callback: (data: { deviceId: string; deviceName: string }) => void) => void;
   onPairingCodeGenerated: (callback: (code: string) => void) => void;
   onPairingCodeCleared: (callback: () => void) => void;
+
+  // Render Output APIs
+  getRenderOutputs: () => Promise<Array<{
+    id: string;
+    name: string;
+    status: 'running' | 'completed' | 'failed';
+    outputPath: string;
+    outputFile?: string;
+    isVideo: boolean;
+    progress?: number;
+    currentFrame?: number;
+    totalFrames?: number;
+    startTime: string;
+    endTime?: string;
+  }>>;
+  readImageAsBase64: (filePath: string) => Promise<string | null>;
+  openRenderOutputWindow: () => Promise<boolean>;
 }
 
 declare global {

@@ -10,7 +10,7 @@ import CommandPreviewBar from "./CommandPreviewBar";
 
 import { QueueSheet } from "./QueueSheet";
 import { Button } from "@/components/ui/button";
-import { Terminal, User, Smartphone } from "lucide-react";
+import { Terminal, User, Smartphone, Image as ImageIcon } from "lucide-react";
 import BlenderPathSelector from "./BlenderPathSelector";
 import { Preset } from "@/types/preset";
 import { toast } from "sonner";
@@ -350,6 +350,25 @@ const MainLayout: React.FC = () => {
               <div className="flex flex-col gap-2 bg-neutral-950 p-2 rounded-md border border-neutral-800">
                 <span className="text-xs text-muted-foreground">Queue</span>
                 <QueueSheet />
+              </div>
+              <div className="flex flex-col gap-2 bg-neutral-950 p-2 rounded-md border border-neutral-800">
+                <span className="text-xs text-muted-foreground">
+                  Render Output
+                </span>
+                <Button
+                  variant={"ghost"}
+                  title="View Render Output"
+                  onClick={async () => {
+                    if (window.electronAPI) {
+                      await window.electronAPI.openRenderOutputWindow();
+                    }
+                  }}
+                >
+                  <ImageIcon className="h-4 w-4" />
+                  <span className="text-xs text-muted-foreground">
+                    Render Output
+                  </span>
+                </Button>
               </div>
               <div className="flex flex-col gap-2 bg-neutral-950 p-2 rounded-md border border-neutral-800">
                 <span className="text-xs text-muted-foreground">

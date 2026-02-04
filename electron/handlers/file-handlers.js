@@ -92,6 +92,54 @@ function register(mainWindow) {
       return null;
     }
   });
+
+  // Read image file as base64 for preview
+  ipcMain.handle('read-image-as-base64', async (event, filePath) => {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+
+      // Check if file exists
+      if (!fs.existsSync(filePath)) {
+        console.error('Image file does not exist:', filePath);
+        return null;
+      }
+
+      // Read file as buffer
+      const imageBuffer = fs.readFileSync(filePath);
+
+      // Determine mime type from extension
+      const ext = path.extname(filePath).toLowerCase();
+      let mimeType = 'image/png';
+
+      switch (ext) {
+        case '.jpg':
+        case '.jpeg':
+          mimeType = 'image/jpeg';
+          break;
+        case '.png':
+          mimeType = 'image/png';
+          break;
+        case '.exr':
+          mimeType = 'image/x-exr';
+          break;
+        case '.tif':
+        case '.tiff':
+          mimeType = 'image/tiff';
+          break;
+        case '.bmp':
+          mimeType = 'image/bmp';
+          break;
+      }
+
+      // Convert to base64
+      const base64Image = imageBuffer.toString('base64');
+      return `data:${mimeType};base64,${base64Image}`;
+    } catch (error) {
+      console.error('Error reading image as base64:', error);
+      return null;
+    }
+  });
 }
 
 module.exports = { register };

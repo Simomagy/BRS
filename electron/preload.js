@@ -80,7 +80,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   onPairingCodeCleared: (callback) => {
     ipcRenderer.on('pairing-code-cleared', (event) => callback());
-  }
+  },
+
+  // Render Output APIs
+  getRenderOutputs: () => ipcRenderer.invoke('getRenderOutputs'),
+  readImageAsBase64: (filePath) => ipcRenderer.invoke('read-image-as-base64', filePath),
+  openRenderOutputWindow: () => ipcRenderer.invoke('open-render-output-window')
 });
 
 console.log('Electron API exposed to window');

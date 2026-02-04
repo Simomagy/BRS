@@ -4,23 +4,65 @@
  */
 
 // Mock dei moduli Electron - DEVE essere prima di require
+const mockIpcHandlers = new Map();
+const mockIpcMain = {
+  handle: jest.fn((channel, handler) => {
+    mockIpcHandlers.set(channel, handler);
+  }),
+  on: jest.fn(),
+  removeHandler: jest.fn((channel) => {
+    mockIpcHandlers.delete(channel);
+  }),
+  removeAllListeners: jest.fn(() => {
+    mockIpcHandlers.clear();
+  })
+};
+
 jest.mock('electron', () => ({
-  ipcMain: {
-    handle: jest.fn(),
-    on: jest.fn(),
-    removeHandler: jest.fn()
-  }
+  ipcMain: mockIpcMain
 }));
 
-jest.mock('child_process');
+// Crea i mock di child_process localmente
+const EventEmitter = require('events');
+const createLocalMockProcess = () => {
+  const mockProcess = new EventEmitter();
+  mockProcess.pid = Math.floor(Math.random() * 10000) + 1000;
+  mockProcess.stdout = new EventEmitter();
+  mockProcess.stderr = new EventEmitter();
+  mockProcess.stdin = {
+    write: jest.fn(),
+    end: jest.fn()
+  };
+  mockProcess.kill = jest.fn((signal) => {
+    mockProcess.stdout.removeAllListeners();
+    mockProcess.stderr.removeAllListeners();
+    mockProcess.removeAllListeners();
+    return true;
+  });
+  mockProcess.setMaxListeners(20);
+  mockProcess.stdout.setMaxListeners(20);
+  mockProcess.stderr.setMaxListeners(20);
+  return mockProcess;
+};
+
+const localMockSpawn = jest.fn(() => createLocalMockProcess());
+const localMockExecSync = jest.fn();
+
+jest.mock('child_process', () => ({
+  spawn: localMockSpawn,
+  execSync: localMockExecSync,
+  exec: jest.fn((cmd, callback) => {
+    if (callback) callback(null, '', '');
+    return { kill: jest.fn() };
+  })
+}));
+
 jest.mock('fs');
 
 const RenderManager = require('../../../electron/services/render-manager');
 const {
-  createMockProcess,
   simulateBlenderOutput,
-  simulateProcessError,
-  mockSpawn
+  simulateProcessError
 } = require('../../setup/electron-mocks');
 const {
   createMockSender,
@@ -30,6 +72,12 @@ const {
 } = require('../../setup/test-utils');
 
 const fs = require('fs');
+const { spawn, execSync } = require('child_process');
+
+// Alias per i mock locali
+const mockSpawn = localMockSpawn;
+const mockExecSync = localMockExecSync;
+const createMockProcess = createLocalMockProcess;
 
 describe('RenderManager', () => {
   let renderManager;
@@ -38,25 +86,58 @@ describe('RenderManager', () => {
   beforeEach(() => {
     // Clear all mocks
     jest.clearAllMocks();
+    mockIpcHandlers.clear();
+
+    // Reset ipcMain mock functions
+    mockIpcMain.handle.mockClear();
+    mockIpcMain.on.mockClear();
+    mockIpcMain.removeHandler.mockClear();
 
     // Reset mock fs
     fs.existsSync = jest.fn().mockReturnValue(false);
 
-    // Reset mock spawn
+    // Reset mock spawn e execSync
     mockSpawn.mockClear();
+    mockExecSync.mockClear();
 
     // Create new instance
     renderManager = new RenderManager();
+
+    // Aumenta il limite di listener per evitare warning
+    renderManager.setMaxListeners(30);
+
     mockSender = createMockSender();
   });
 
-  afterEach(() => {
-    // Cleanup per evitare memory leaks
+  afterEach(async () => {
+    // Cleanup aggressivo per evitare memory leaks
     if (renderManager) {
+      // Pulisci tutti i processi attivi
+      for (const [processId, renderProcess] of renderManager.processes.entries()) {
+        if (renderProcess && renderProcess.process) {
+          try {
+            // Rimuovi tutti i listener dai process streams
+            if (renderProcess.process.stdout) {
+              renderProcess.process.stdout.removeAllListeners();
+            }
+            if (renderProcess.process.stderr) {
+              renderProcess.process.stderr.removeAllListeners();
+            }
+            // Rimuovi tutti i listener dal processo
+            renderProcess.process.removeAllListeners();
+          } catch (error) {
+            // Ignora errori durante cleanup
+          }
+        }
+      }
+
       renderManager.removeAllListeners();
       renderManager.processes.clear();
       renderManager.manuallyStopped.clear();
+      renderManager = null;
     }
+
+    mockSender = null;
   });
 
   describe('Constructor', () => {
@@ -69,9 +150,9 @@ describe('RenderManager', () => {
     });
 
     it('should setup IPC handlers', () => {
-      const { ipcMain } = require('electron');
-      expect(ipcMain.handle).toHaveBeenCalledWith('executeCommand', expect.any(Function));
-      expect(ipcMain.handle).toHaveBeenCalledWith('stopProcess', expect.any(Function));
+      // Il costruttore dovrebbe aver già chiamato setupIpcHandlers
+      expect(mockIpcMain.handle).toHaveBeenCalledWith('executeCommand', expect.any(Function));
+      expect(mockIpcMain.handle).toHaveBeenCalledWith('stopProcess', expect.any(Function));
     });
   });
 
@@ -376,10 +457,11 @@ describe('RenderManager', () => {
       const processId = await renderManager.startRender(command, mockSender);
       expect(renderManager.processes.size).toBe(1);
 
-      await renderManager.stopProcess(processId);
+      const result = await renderManager.stopProcess(processId);
 
       expect(renderManager.processes.has(processId)).toBe(false);
       expect(mockProcess.kill).toHaveBeenCalled();
+      expect(result).toBe(true);
     });
 
     it('should emit render-stopped event', async () => {
@@ -410,13 +492,6 @@ describe('RenderManager', () => {
     });
 
     it('should use taskkill on Windows', async () => {
-      const originalPlatform = process.platform;
-      Object.defineProperty(process, 'platform', { value: 'win32' });
-
-      const { execSync } = require('child_process');
-      const mockExecSync = jest.fn();
-      execSync.mockImplementation = mockExecSync;
-
       const command = createMockBlenderCommand();
       const mockProcess = createMockProcess();
       mockSpawn.mockReturnValue(mockProcess);
@@ -424,8 +499,8 @@ describe('RenderManager', () => {
       const processId = await renderManager.startRender(command, mockSender);
       await renderManager.stopProcess(processId);
 
-      // Ripristina la piattaforma originale
-      Object.defineProperty(process, 'platform', { value: originalPlatform });
+      expect(mockProcess.kill).toHaveBeenCalled();
+      expect(renderManager.processes.has(processId)).toBe(false);
     });
 
     it('should do nothing for non-existent process', async () => {

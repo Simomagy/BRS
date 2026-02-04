@@ -142,7 +142,19 @@ const createMockProcess = () => {
     write: jest.fn(),
     end: jest.fn()
   };
-  mockProcess.kill = jest.fn().mockReturnValue(true);
+  mockProcess.kill = jest.fn((signal) => {
+    // Cleanup automatico quando il processo viene killato
+    mockProcess.stdout.removeAllListeners();
+    mockProcess.stderr.removeAllListeners();
+    mockProcess.removeAllListeners();
+    return true;
+  });
+
+  // Limita i listener per evitare memory warnings
+  mockProcess.setMaxListeners(20);
+  mockProcess.stdout.setMaxListeners(20);
+  mockProcess.stderr.setMaxListeners(20);
+
   return mockProcess;
 };
 

@@ -1,4 +1,4 @@
-const { app } = require('electron');
+const { app, ipcMain } = require('electron');
 const path = require('path');
 const Store = require('electron-store');
 const RenderManager = require('./services/render-manager');
@@ -6,6 +6,10 @@ const MobileCompanionServer = require('./services/mobile-companion-server');
 const SystemMonitor = require('./services/system-monitor');
 const { initializeAppLifecycle } = require('./core/app');
 const { registerAllHandlers } = require('./core/ipc-controller');
+const {
+  createRenderOutputWindow,
+  sendToRenderOutputWindow
+} = require('./core/render-output-window');
 
 // Determina se siamo in modalità sviluppo basandoci sul percorso di esecuzione
 const isDevelopment = app.isPackaged === false;
@@ -317,10 +321,49 @@ function initializeMobileCompanionServer() {
 // Initialize mobile companion server events
 initializeMobileCompanionServer();
 
+// Initialize render output window events
+function initializeRenderOutputEvents() {
+  // Forward render-output events to the render output window
+  renderManager.on('render-output-started', (data) => {
+    sendToRenderOutputWindow('render-output-started', data);
+  });
+
+  renderManager.on('render-output-progress', (data) => {
+    sendToRenderOutputWindow('render-output-progress', data);
+  });
+
+  renderManager.on('render-output-completed', (data) => {
+    sendToRenderOutputWindow('render-output-completed', data);
+  });
+
+  renderManager.on('render-output-failed', (data) => {
+    sendToRenderOutputWindow('render-output-failed', data);
+  });
+}
+
+// Initialize render output events
+initializeRenderOutputEvents();
+
 // Get main window lazily for IPC handlers
 let mainWindow = null;
 app.on('browser-window-created', (event, window) => {
   mainWindow = window;
+});
+
+// Register render output window handler
+ipcMain.handle('open-render-output-window', () => {
+  if (!mainWindow) {
+    console.error('Main window not available');
+    return false;
+  }
+
+  try {
+    createRenderOutputWindow({ mainWindow });
+    return true;
+  } catch (error) {
+    console.error('Error opening render output window:', error);
+    return false;
+  }
 });
 
 // Registra tutti gli handler IPC
