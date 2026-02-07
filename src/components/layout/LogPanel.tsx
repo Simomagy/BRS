@@ -65,7 +65,7 @@ const LogPanel: React.FC<LogPanelProps> = ({
       logs
         .map(
           (log) =>
-            `[${log.timestamp}] [${log.level.toUpperCase()}] ${log.message}`
+            `[${log.timestamp}] [${log.level?.toUpperCase() || 'INFO'}] ${log.message}`
         )
         .join("\n"),
     [logs]

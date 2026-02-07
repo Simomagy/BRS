@@ -127,28 +127,16 @@ if (!store.has('defaultPreset')) {
 // Inizializza i servizi
 const renderManager = new RenderManager();
 const systemMonitor = new SystemMonitor();
-const mobileCompanionServer = new MobileCompanionServer(renderManager, store);
+
+// Getter for mainWindow to pass to services (lazy evaluation)
+const getMainWindow = () => mainWindow;
+const mobileCompanionServer = new MobileCompanionServer(renderManager, store, { mainWindow: null });
 
 // Inizializza il mobile companion server
 function initializeMobileCompanionServer() {
   // Connect renderManager events to mobileCompanionServer
   renderManager.on('render-started', (data) => {
     mobileCompanionServer.broadcastToClients('render-started', data);
-
-    // Send push notification for render start
-    console.log('🚀 SENDING RENDER STARTED NOTIFICATION');
-    console.log('  - Process ID:', data.processId);
-    console.log('  - Command:', data.command?.substring(0, 50) + '...');
-    mobileCompanionServer.broadcastPushNotification({
-      title: 'Render Started 🚀',
-      body: 'Your Blender render has started processing.',
-      data: {
-        type: 'render_started',
-        processId: String(data.processId || 'unknown'),
-        startTime: String(data.startTime || new Date().toISOString()),
-        command: String(data.command?.substring(0, 100) || 'Unknown command')
-      }
-    });
   });
 
   renderManager.on('render-progress', (data) => {
@@ -173,135 +161,22 @@ function initializeMobileCompanionServer() {
       }
     });
 
-    // Save to history
-    try {
-      const history = await store.get('renderHistory', []);
-      const historyEntry = {
-        id: require('crypto').randomUUID(),
-        name: `Render ${new Date().toLocaleString()}`,
-        command: data.command || 'Unknown command',
-        status: 'completed',
-        startTime: data.startTime || new Date().toISOString(),
-        endTime: new Date().toISOString(),
-        duration: data.duration || 0,
-        progress: 100,
-        currentFrame: data.currentFrame || 0,
-        totalFrames: data.totalFrames || 0,
-        currentSample: data.currentSample || 0,
-        totalSamples: data.totalSamples || 0,
-        parameters: {
-          blenderVersion: data.blenderVersion || '',
-          renderEngine: data.renderEngine || '',
-          outputPath: data.outputPath || '',
-          totalFrames: data.totalFrames || 0,
-          lastUsed: new Date().toISOString(),
-        }
-      };
-
-      const updatedHistory = [historyEntry, ...history].slice(0, 100); // Keep last 100 entries
-      await store.set('renderHistory', updatedHistory);
-    } catch (error) {
-      console.error('Failed to save to history:', error);
-    }
+    // Note: History is now managed by RenderPanel.tsx to avoid duplicates
+    // and ensure all data is captured correctly with proper naming
   });
 
   renderManager.on('render-stopped', async (data) => {
     mobileCompanionServer.broadcastToClients('render-stopped', data);
 
-    // Send push notification for render stop
-    console.log('🛑 SENDING RENDER STOPPED NOTIFICATION');
-    console.log('  - Process ID:', data.processId);
-    mobileCompanionServer.broadcastPushNotification({
-      title: 'Render Stopped 🛑',
-      body: 'Your Blender render has been stopped.',
-      data: {
-        type: 'render_stopped',
-        processId: String(data.processId || 'unknown'),
-        stopTime: new Date().toISOString()
-      }
-    });
-
-    // Save to history
-    try {
-      const history = await store.get('renderHistory', []);
-      const historyEntry = {
-        id: require('crypto').randomUUID(),
-        name: `Render ${new Date().toLocaleString()} (Stopped)`,
-        command: data.command || 'Unknown command',
-        status: 'stopped',
-        startTime: data.startTime || new Date().toISOString(),
-        endTime: new Date().toISOString(),
-        duration: data.duration || 0,
-        progress: data.progress || 0,
-        currentFrame: data.currentFrame || 0,
-        totalFrames: data.totalFrames || 0,
-        currentSample: data.currentSample || 0,
-        totalSamples: data.totalSamples || 0,
-        parameters: {
-          blenderVersion: data.blenderVersion || '',
-          renderEngine: data.renderEngine || '',
-          outputPath: data.outputPath || '',
-          totalFrames: data.totalFrames || 0,
-          lastUsed: new Date().toISOString(),
-        }
-      };
-
-      const updatedHistory = [historyEntry, ...history].slice(0, 100);
-      await store.set('renderHistory', updatedHistory);
-    } catch (error) {
-      console.error('Failed to save to history:', error);
-    }
+    // Note: History is now managed by RenderPanel.tsx to avoid duplicates
+    // and ensure all data is captured correctly with proper naming
   });
 
   renderManager.on('render-error', async (data) => {
     mobileCompanionServer.broadcastToClients('render-error', data);
 
-    // Send push notification for render error
-    console.log('❌ SENDING RENDER ERROR NOTIFICATION');
-    console.log('  - Process ID:', data.processId);
-    console.log('  - Error:', data.error?.substring(0, 100));
-    mobileCompanionServer.broadcastPushNotification({
-      title: 'Render Error ❌',
-      body: 'Your Blender render encountered an error and stopped.',
-      data: {
-        type: 'render_error',
-        processId: String(data.processId || 'unknown'),
-        error: String(data.error?.substring(0, 200) || 'Unknown error'),
-        errorTime: new Date().toISOString()
-      }
-    });
-
-    // Save to history
-    try {
-      const history = await store.get('renderHistory', []);
-      const historyEntry = {
-        id: require('crypto').randomUUID(),
-        name: `Render ${new Date().toLocaleString()} (Error)`,
-        command: data.command || 'Unknown command',
-        status: 'failed',
-        startTime: data.startTime || new Date().toISOString(),
-        endTime: new Date().toISOString(),
-        duration: data.duration || 0,
-        progress: data.progress || 0,
-        currentFrame: data.currentFrame || 0,
-        totalFrames: data.totalFrames || 0,
-        currentSample: data.currentSample || 0,
-        totalSamples: data.totalSamples || 0,
-        error: data.error || 'Unknown error',
-        parameters: {
-          blenderVersion: data.blenderVersion || '',
-          renderEngine: data.renderEngine || '',
-          outputPath: data.outputPath || '',
-          totalFrames: data.totalFrames || 0,
-          lastUsed: new Date().toISOString(),
-        }
-      };
-
-      const updatedHistory = [historyEntry, ...history].slice(0, 100);
-      await store.set('renderHistory', updatedHistory);
-    } catch (error) {
-      console.error('Failed to save to history:', error);
-    }
+    // Note: History is now managed by RenderPanel.tsx to avoid duplicates
+    // and ensure all data is captured correctly with proper naming
   });
 
   // Setup event listeners
@@ -315,6 +190,32 @@ function initializeMobileCompanionServer() {
 
   mobileCompanionServer.on('device-paired', (data) => {
     console.log(`New device paired: ${data.deviceName}`);
+  });
+
+  // Listen for external render started (e.g., from Blender addon)
+  mobileCompanionServer.on('render-started-external', (data) => {
+    console.log(`External render started: ${data.processId}`);
+    // Forward to renderer to update UI
+    if (mainWindow && mainWindow.webContents) {
+      mainWindow.webContents.send('external-render-started', data);
+    }
+  });
+
+  // Listen for preset changes via API
+  mobileCompanionServer.on('preset-saved', (data) => {
+    console.log(`Preset saved via API: ${data.preset.name}`);
+    // Forward to renderer to refresh preset list
+    if (mainWindow && mainWindow.webContents) {
+      mainWindow.webContents.send('preset-updated', data);
+    }
+  });
+
+  mobileCompanionServer.on('preset-deleted', (data) => {
+    console.log(`Preset deleted via API: ${data.presetId}`);
+    // Forward to renderer to refresh preset list
+    if (mainWindow && mainWindow.webContents) {
+      mainWindow.webContents.send('preset-deleted', data);
+    }
   });
 }
 
@@ -339,6 +240,33 @@ function initializeRenderOutputEvents() {
   renderManager.on('render-output-failed', (data) => {
     sendToRenderOutputWindow('render-output-failed', data);
   });
+
+  // NOTE: No need to forward render-progress here for UI-started renders
+  // They already use event.sender which correctly sends to the UI
+  // External renders (from Blender) use the mobile-companion-server sender
+  // which sends to mainWindow directly
+
+  // Forward render started events to main window
+  renderManager.on('render-started', (data) => {
+    if (mainWindow && mainWindow.webContents) {
+      console.log(`Forwarding render-started to main window: ${data.processId}`);
+      mainWindow.webContents.send('render-started', data);
+    }
+  });
+
+  // Forward render completed events to main window
+  renderManager.on('render-completed', (data) => {
+    if (mainWindow && mainWindow.webContents) {
+      mainWindow.webContents.send(`complete-${data.processId}`, data.exitCode || 0);
+    }
+  });
+
+  // Forward render error events to main window
+  renderManager.on('render-error', (data) => {
+    if (mainWindow && mainWindow.webContents) {
+      mainWindow.webContents.send(`error-${data.processId}`, data.error || data.message);
+    }
+  });
 }
 
 // Initialize render output events
@@ -348,6 +276,10 @@ initializeRenderOutputEvents();
 let mainWindow = null;
 app.on('browser-window-created', (event, window) => {
   mainWindow = window;
+  // Update reference in mobile companion server
+  if (mobileCompanionServer) {
+    mobileCompanionServer.mainWindow = mainWindow;
+  }
 });
 
 // Register render output window handler

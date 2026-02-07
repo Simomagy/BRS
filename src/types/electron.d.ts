@@ -68,6 +68,9 @@ export interface ProgressEventData {
 	totalSamples?: number;
 	inCompositing?: boolean;
 	compositingOperation?: string;
+	currentTile?: number;
+	totalTiles?: number;
+	remainingTime?: string;
 }
 
 export interface ElectronAPI {
@@ -142,6 +145,9 @@ export interface ElectronAPI {
   }>>;
   readImageAsBase64: (filePath: string) => Promise<string | null>;
   openRenderOutputWindow: () => Promise<boolean>;
+
+  // Render Manager APIs
+  getActiveProcesses: () => Promise<{ success: boolean; processIds?: string[]; error?: string }>;
 }
 
 declare global {

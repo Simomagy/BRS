@@ -12,27 +12,28 @@ const { EventEmitter } = require('events');
 // Firebase removed - now using external API proxy
 
 class MobileCompanionServer extends EventEmitter {
-  constructor(renderManager, store) {
+  constructor(renderManager, store, options = {}) {
     super();
     this.renderManager = renderManager;
     this.store = store;
+    this.mainWindow = options.mainWindow || null;
     this.server = null;
     this.io = null;
     this.httpServer = null;
     this.app = null;
     this.port = 8080;
     this.isRunning = false;
-    
+
     // Pairing system
     this.currentPairingCode = null;
     this.pairingCodeExpiry = null;
     this.pairedDevices = new Map(); // deviceId -> { name, connectedAt, lastSeen }
     this.connectedClients = new Map(); // socketId -> { deviceId, socket }
-    
+
     // Push notifications via external API
     this.deviceTokens = new Map(); // deviceId -> fcmToken
     this.apiEndpoint = 'https://brs.api.nebulastudio.dev';
-    
+
     // Setup logger
     this.logger = winston.createLogger({
       level: 'info',
@@ -59,16 +60,11 @@ class MobileCompanionServer extends EventEmitter {
     try {
       console.log('🔧 TESTING API CONNECTIVITY:');
       console.log('  - API Endpoint:', this.apiEndpoint);
-      
+
       const response = await fetch(`${this.apiEndpoint}/api/health`);
       const data = await response.json();
-      
+
       if (response.ok) {
-        console.log('✅ API connection successful!');
-        console.log('  - API Status:', data.api);
-        console.log('  - Firebase configured:', data.firebase?.configured);
-        console.log('  - Firebase initialized:', data.firebase?.initialized);
-        console.log('🔔 Push notifications are ENABLED via API proxy');
         this.logger.info('API connectivity test successful - push notifications enabled');
         return true;
       } else {
@@ -88,21 +84,10 @@ class MobileCompanionServer extends EventEmitter {
    * Send push notification to a specific device via API
    */
   async sendPushNotification(deviceId, notification) {
-    console.log('🔔 SENDING PUSH NOTIFICATION VIA API:');
-    console.log('  - Target Device ID:', deviceId);
-    console.log('  - Notification:', notification);
-    console.log('  - API Endpoint:', this.apiEndpoint);
 
     const token = this.deviceTokens.get(deviceId);
-    console.log('🔍 Looking up token for device:', deviceId);
-    console.log('  - Token found:', token ? 'YES (' + token.substring(0, 20) + '...)' : 'NO');
-    
+
     if (!token) {
-      console.log('❌ No FCM token found for device:', deviceId);
-      console.log('📋 Available devices:');
-      for (const [id, t] of this.deviceTokens.entries()) {
-        console.log(`  - ${id}: ${t.substring(0, 20)}...`);
-      }
       this.logger.warn(`No FCM token found for device ${deviceId}`);
       return false;
     }
@@ -115,8 +100,6 @@ class MobileCompanionServer extends EventEmitter {
         data: notification.data || {}
       };
 
-      console.log('🚀 Sending API request:', payload);
-
       const response = await fetch(`${this.apiEndpoint}/api/notifications/send`, {
         method: 'POST',
         headers: {
@@ -128,29 +111,21 @@ class MobileCompanionServer extends EventEmitter {
       const result = await response.json();
 
       if (response.ok) {
-        console.log('✅ Push notification sent successfully via API!');
-        console.log('  - Response:', result);
         this.logger.info(`Push notification sent successfully: ${result.messageId}`);
         return true;
       } else {
-        console.log('❌ API request failed:', response.status, response.statusText);
-        console.log('  - Error details:', result);
         this.logger.error(`Failed to send push notification via API: ${result.error}`);
-        
+
         // If token is invalid, remove it
         if (result.error && result.error.includes('registration-token-not-registered')) {
-          console.log('🗑️  Removing invalid token for device:', deviceId);
           this.logger.info(`Removing invalid token for device ${deviceId}`);
           this.deviceTokens.delete(deviceId);
           this.saveDeviceTokens();
         }
-        
+
         return false;
       }
     } catch (error) {
-      console.log('❌ Failed to send push notification via API!');
-      console.log('🔍 Error message:', error.message);
-      console.log('🔍 Full error:', error);
       this.logger.error(`Failed to send push notification via API: ${error.message}`);
       return false;
     }
@@ -160,33 +135,20 @@ class MobileCompanionServer extends EventEmitter {
    * Send push notification to all connected devices via API
    */
   async broadcastPushNotification(notification) {
-    console.log('📢 BROADCASTING PUSH NOTIFICATION VIA API:');
-    console.log('  - Notification:', notification);
-    console.log('  - API Endpoint:', this.apiEndpoint);
-    console.log('  - Registered devices count:', this.deviceTokens.size);
-
     if (this.deviceTokens.size === 0) {
-      console.log('❌ No registered devices for push notifications');
       return 0;
-    }
-
-    console.log('🎯 Broadcasting to devices:');
-    for (const deviceId of this.deviceTokens.keys()) {
-      console.log(`  - ${deviceId}`);
     }
 
     try {
       // Get all tokens
       const tokens = Array.from(this.deviceTokens.values());
-      
+
       const payload = {
         tokens: tokens,
         title: notification.title,
         body: notification.body,
         data: notification.data || {}
       };
-
-      console.log('🚀 Sending broadcast API request:', payload);
 
       const response = await fetch(`${this.apiEndpoint}/api/notifications/broadcast`, {
         method: 'POST',
@@ -199,21 +161,13 @@ class MobileCompanionServer extends EventEmitter {
       const result = await response.json();
 
       if (response.ok) {
-        console.log('✅ Broadcast notification sent successfully via API!');
-        console.log(`  - Success count: ${result.successCount}/${tokens.length}`);
-        console.log('  - Response:', result);
         this.logger.info(`Broadcast push notification sent to ${result.successCount}/${tokens.length} devices`);
         return result.successCount;
       } else {
-        console.log('❌ Broadcast API request failed:', response.status, response.statusText);
-        console.log('  - Error details:', result);
         this.logger.error(`Failed to broadcast push notification via API: ${result.error}`);
         return 0;
       }
     } catch (error) {
-      console.log('❌ Failed to broadcast push notification via API!');
-      console.log('🔍 Error message:', error.message);
-      console.log('🔍 Full error:', error);
       this.logger.error(`Failed to broadcast push notification via API: ${error.message}`);
       return 0;
     }
@@ -246,25 +200,24 @@ class MobileCompanionServer extends EventEmitter {
 
   setupExpress() {
     this.app = express();
-    
+
     // Add logging middleware to see all incoming requests
     this.app.use((req, res, next) => {
-      console.log(`📡 HTTP ${req.method} ${req.url} from ${req.ip}`);
       next();
     });
-    
+
     // Security middleware
     this.app.use(helmet({
       contentSecurityPolicy: false, // Disable CSP for development
       crossOriginEmbedderPolicy: false
     }));
-    
+
     this.app.use(cors({
       origin: "*", // Allow all origins for LAN connections
       methods: ["GET", "POST"],
       credentials: false
     }));
-    
+
     this.app.use(express.json());
 
     // Health check endpoint
@@ -283,7 +236,7 @@ class MobileCompanionServer extends EventEmitter {
         res.status(404).json({ error: 'No active pairing code' });
         return;
       }
-      
+
       res.json({
         code: this.currentPairingCode,
         expiresAt: this.pairingCodeExpiry
@@ -292,7 +245,7 @@ class MobileCompanionServer extends EventEmitter {
 
     // File browsing API endpoints
     this.setupFileAPI();
-    
+
     // Create HTTP server
     this.httpServer = createServer(this.app);
   }
@@ -306,7 +259,7 @@ class MobileCompanionServer extends EventEmitter {
       try {
         const { path: dirPath, filter } = req.query;
         const os = require('os');
-        
+
         // If no path specified, show system drives on Windows or root on Unix
         let targetPath;
         if (!dirPath) {
@@ -326,7 +279,7 @@ class MobileCompanionServer extends EventEmitter {
                 });
               }
             }
-            
+
             // Add common folders
             const homeDir = os.homedir();
             const commonFolders = [
@@ -334,7 +287,7 @@ class MobileCompanionServer extends EventEmitter {
               { name: 'Documents', path: path.join(homeDir, 'Documents') },
               { name: 'Downloads', path: path.join(homeDir, 'Downloads') },
             ];
-            
+
             const result = {
               currentPath: 'Computer',
               parentPath: null,
@@ -349,7 +302,7 @@ class MobileCompanionServer extends EventEmitter {
                 }))
               ]
             };
-            
+
             return res.json(result);
           } else {
             // On Unix-like systems, start from root
@@ -379,7 +332,7 @@ class MobileCompanionServer extends EventEmitter {
           try {
             const itemPath = path.join(targetPath, item.name);
             const itemStats = fs.statSync(itemPath);
-            
+
             const fileInfo = {
               name: item.name,
               path: itemPath,
@@ -479,7 +432,7 @@ class MobileCompanionServer extends EventEmitter {
       try {
         const presets = await this.store.get('presets', []);
         const preset = presets.find(p => p.id === req.params.id);
-        
+
         if (!preset) {
           return res.status(404).json({ error: 'Preset not found' });
         }
@@ -495,7 +448,7 @@ class MobileCompanionServer extends EventEmitter {
     this.app.post('/api/generate-command', async (req, res) => {
       try {
         const { parameters } = req.body;
-        
+
         if (!parameters || !parameters.blender_path) {
           return res.status(400).json({ error: 'Missing required parameters' });
         }
@@ -523,14 +476,14 @@ class MobileCompanionServer extends EventEmitter {
     this.app.post('/api/presets', async (req, res) => {
       try {
         const { preset } = req.body;
-        
+
         if (!preset || !preset.name) {
           return res.status(400).json({ error: 'Invalid preset data' });
         }
 
         // Get current presets
         const presets = await this.store.get('presets', []);
-        
+
         let updatedPresets;
         if (preset.id && presets.find(p => p.id === preset.id)) {
           // Update existing preset - maintain exact order and structure
@@ -569,8 +522,18 @@ class MobileCompanionServer extends EventEmitter {
 
         // Save to store
         await this.store.set('presets', updatedPresets);
-        
-        res.json({ success: true, preset: updatedPresets[updatedPresets.length - 1] });
+
+        const savedPreset = updatedPresets[updatedPresets.length - 1];
+
+        // Emit event to update UI
+        this.emit('preset-saved', {
+          preset: savedPreset,
+          isNew: !preset.id || !presets.find(p => p.id === preset.id)
+        });
+
+        this.logger.info(`Preset ${savedPreset.id} saved via API`);
+
+        res.json({ success: true, preset: savedPreset });
       } catch (error) {
         this.logger.error('Save preset API error:', error);
         res.status(500).json({ error: 'Failed to save preset' });
@@ -582,10 +545,17 @@ class MobileCompanionServer extends EventEmitter {
       try {
         const { id } = req.params;
         const presets = await this.store.get('presets', []);
+        const deletedPreset = presets.find(p => p.id === id);
         const updatedPresets = presets.filter(p => p.id !== id);
-        
+
         await this.store.set('presets', updatedPresets);
-        
+
+        // Emit event to update UI
+        if (deletedPreset) {
+          this.emit('preset-deleted', { presetId: id, preset: deletedPreset });
+          this.logger.info(`Preset ${id} deleted via API`);
+        }
+
         res.json({ success: true });
       } catch (error) {
         this.logger.error('Delete preset API error:', error);
@@ -610,9 +580,9 @@ class MobileCompanionServer extends EventEmitter {
         const { id } = req.params;
         const history = await this.store.get('renderHistory', []);
         const updatedHistory = history.filter(h => h.id !== id);
-        
+
         await this.store.set('renderHistory', updatedHistory);
-        
+
         res.json({ success: true });
       } catch (error) {
         this.logger.error('Delete history API error:', error);
@@ -630,28 +600,192 @@ class MobileCompanionServer extends EventEmitter {
         res.status(500).json({ error: 'Failed to clear history' });
       }
     });
+
+    // Execute render command (for Blender addon integration)
+    this.app.post('/api/render/execute', async (req, res) => {
+      try {
+        const { command, autoStart = true } = req.body;
+
+        if (!command || typeof command !== 'string') {
+          return res.status(400).json({ error: 'Invalid command parameter' });
+        }
+
+        this.logger.info('Render execute request received from external source');
+        this.logger.info(`Command: ${command.substring(0, 100)}...`);
+
+        // Check if already rendering
+        if (this.renderManager.hasActiveRenders()) {
+          this.logger.warn('Render already in progress, rejecting new request');
+          return res.status(409).json({
+            error: 'Render already in progress',
+            activeProcesses: this.renderManager.getActiveProcesses()
+          });
+        }
+
+        if (!autoStart) {
+          // Just return success without starting
+          return res.json({
+            success: true,
+            message: 'Command validated but not started',
+            command: command
+          });
+        }
+
+        // Start render using render manager
+        // Create a sender that broadcasts to mobile clients AND sends to main window
+        const processId = await this.renderManager.startRender(command, {
+          send: (event, data) => {
+            // Broadcast progress to all connected mobile clients
+            this.broadcastToClients('render-progress', { event, data });
+
+            // Also send to main window for UI updates
+            if (this.mainWindow && this.mainWindow.webContents) {
+              this.mainWindow.webContents.send(event, data);
+            }
+          }
+        });
+
+        this.logger.info(`Render started with process ID: ${processId}`);
+
+        // Emit event to update main UI
+        this.emit('render-started-external', {
+          processId,
+          command: command,
+          startedBy: 'External (Blender)',
+          startTime: new Date().toISOString()
+        });
+
+        // Broadcast render started event to mobile clients
+        this.broadcastToClients('render-started', {
+          processId,
+          command: command.substring(0, 100) + '...',
+          startedBy: 'External (Blender)',
+          startTime: new Date().toISOString()
+        });
+
+        // Send push notification if configured
+        this.broadcastPushNotification({
+          title: 'Render Started 🎬',
+          body: 'A new render was started from Blender',
+          data: {
+            type: 'render_started',
+            processId: String(processId),
+            source: 'blender',
+            startTime: new Date().toISOString()
+          }
+        });
+
+        // Return success with process ID
+        res.json({
+          success: true,
+          processId: processId,
+          message: 'Render started successfully'
+        });
+
+      } catch (error) {
+        this.logger.error('Execute render API error:', error);
+        res.status(500).json({
+          error: 'Failed to execute render',
+          details: error.message
+        });
+      }
+    });
+
+    // Stop render (for Blender addon integration)
+    this.app.post('/api/render/stop', async (req, res) => {
+      try {
+        const { processId } = req.body;
+
+        this.logger.info('Render stop request received from external source');
+
+        if (processId) {
+          // Stop specific process
+          await this.renderManager.stopProcess(processId);
+          this.logger.info(`Stopped process: ${processId}`);
+
+          this.broadcastToClients('render-stopped', {
+            processId: processId,
+            stoppedBy: 'External (Blender)',
+            stopTime: new Date().toISOString()
+          });
+
+          res.json({
+            success: true,
+            message: `Process ${processId} stopped successfully`
+          });
+        } else {
+          // Stop all renders
+          this.renderManager.stopAllRenders();
+          this.logger.info('Stopped all render processes');
+
+          this.broadcastToClients('render-stopped', {
+            stoppedBy: 'External (Blender)',
+            stopTime: new Date().toISOString()
+          });
+
+          res.json({
+            success: true,
+            message: 'All renders stopped successfully'
+          });
+        }
+
+      } catch (error) {
+        this.logger.error('Stop render API error:', error);
+        res.status(500).json({
+          error: 'Failed to stop render',
+          details: error.message
+        });
+      }
+    });
+
+    // Get current render status (for real-time monitoring)
+    this.app.get('/api/render/status', async (req, res) => {
+      try {
+        const isRendering = this.renderManager.hasActiveRenders();
+        const activeProcesses = this.renderManager.getActiveProcesses();
+        const outputs = await this.renderManager.getRenderOutputs?.() || [];
+
+        // Get most recent render output for progress info
+        const currentRender = outputs.find(o => o.status === 'running');
+
+        res.json({
+          isRendering: isRendering,
+          activeProcesses: activeProcesses.length,
+          processIds: activeProcesses,
+          currentRender: currentRender || null,
+          timestamp: new Date().toISOString()
+        });
+
+      } catch (error) {
+        this.logger.error('Get render status API error:', error);
+        res.status(500).json({
+          error: 'Failed to get render status',
+          details: error.message
+        });
+      }
+    });
   }
 
   // Helper function to generate unique output file names
   generateUniqueOutputPath(outputPath, fileName) {
     const fs = require('fs');
     const path = require('path');
-    
+
     // Parse the filename and extension
     const parsedPath = path.parse(fileName);
     const baseName = parsedPath.name;
     const extension = parsedPath.ext;
-    
+
     // Build the full path
     let fullPath = path.join(outputPath, fileName);
     let counter = 1;
-    
+
     // Keep checking until we find a filename that doesn't exist
     while (fs.existsSync(fullPath)) {
       const newFileName = `${baseName}_${counter.toString().padStart(3, '0')}${extension}`;
       fullPath = path.join(outputPath, newFileName);
       counter++;
-      
+
       // Safety check to prevent infinite loop
       if (counter > 999) {
         // Fall back to timestamp-based naming
@@ -661,7 +795,7 @@ class MobileCompanionServer extends EventEmitter {
         break;
       }
     }
-    
+
     return fullPath;
   }
 
@@ -696,7 +830,7 @@ class MobileCompanionServer extends EventEmitter {
       // Output path and filename with duplicate prevention
       if (parameters.output_path && parameters.output_filename) {
         const uniqueOutputPath = this.generateUniqueOutputPath(
-          parameters.output_path, 
+          parameters.output_path,
           parameters.output_filename
         );
         command += ` -o "${uniqueOutputPath}"`;
@@ -704,14 +838,10 @@ class MobileCompanionServer extends EventEmitter {
     }
 
     // Resolution Settings
-    if (parameters.resolution_enabled) {
-      if (parameters.resolution_x && parameters.resolution_y) {
-        command += ` --render-output "${parameters.resolution_x}x${parameters.resolution_y}"`;
-      }
-      if (parameters.resolution_percentage) {
-        command += ` --render-percentage ${parameters.resolution_percentage}`;
-      }
-    }
+    // NOTE: Blender reads resolution from .blend file
+    // There are no direct CLI parameters for resolution X/Y
+    // -x and -y are for different purposes (file extension, border render)
+    // Resolution must be set in the .blend file itself
 
     // Frame Settings
     if (parameters.frames_enabled) {
@@ -804,11 +934,11 @@ class MobileCompanionServer extends EventEmitter {
     // Authentication middleware
     this.io.use((socket, next) => {
       const { pairingCode, deviceId, deviceName } = socket.handshake.auth;
-      
+
       console.log(`🔍 AUTH ATTEMPT - deviceId: ${deviceId}, pairingCode: ${pairingCode}, deviceName: ${deviceName}`);
       console.log(`🔍 CURRENT PAIRING CODE: ${this.currentPairingCode}, expiry: ${this.pairingCodeExpiry}`);
       console.log(`🔍 TIME NOW: ${Date.now()}, is valid: ${this.validatePairingCode(pairingCode)}`);
-      
+
       // Check if device is already paired
       if (deviceId && this.pairedDevices.has(deviceId)) {
         socket.deviceId = deviceId;
@@ -816,29 +946,29 @@ class MobileCompanionServer extends EventEmitter {
         this.logger.info(`Authenticated paired device: ${socket.deviceName} (${deviceId})`);
         return next();
       }
-      
+
       // Check pairing code for new devices
       if (pairingCode && this.validatePairingCode(pairingCode)) {
         const newDeviceId = crypto.randomUUID();
         socket.deviceId = newDeviceId;
         socket.deviceName = deviceName || 'Mobile Device';
-        
+
         // Add to paired devices
         this.pairedDevices.set(newDeviceId, {
           name: socket.deviceName,
           connectedAt: new Date().toISOString(),
           lastSeen: new Date().toISOString()
         });
-        
+
         this.savePairedDevices();
         this.clearPairingCode();
-        
+
         console.log(`✅ NEW DEVICE PAIRED: ${socket.deviceName} (${newDeviceId})`);
         this.emit('device-paired', { deviceId: newDeviceId, deviceName: socket.deviceName });
-        
+
         return next();
       }
-      
+
       console.log(`❌ AUTHENTICATION FAILED for socket ${socket.id}`);
       console.log(`❌ REASON: No valid deviceId (${deviceId}) or pairingCode (${pairingCode})`);
       next(new Error('Authentication failed'));
@@ -852,7 +982,7 @@ class MobileCompanionServer extends EventEmitter {
 
   handleConnection(socket) {
     this.logger.info(`Device connected: ${socket.deviceName} (${socket.deviceId})`);
-    
+
     // Store connected client
     this.connectedClients.set(socket.id, {
       deviceId: socket.deviceId,
@@ -890,7 +1020,7 @@ class MobileCompanionServer extends EventEmitter {
     socket.on('start-render', async (data) => {
       try {
         this.logger.info(`Start render request from ${socket.deviceName}`);
-        
+
         if (!this.validateRenderParams(data)) {
           socket.emit('error', { message: 'Invalid render parameters' });
           return;
@@ -905,11 +1035,10 @@ class MobileCompanionServer extends EventEmitter {
         const processId = await this.renderManager.startRender(data.command, {
           send: (event, data) => {
             this.broadcastToClients('render-progress', { event, data });
-            
+
             // Send push notification for important events
             if (event === 'progress' && data.progress === 100) {
               // Render completed
-              console.log('🎉 SENDING RENDER COMPLETE NOTIFICATION');
               this.broadcastPushNotification({
                 title: 'Render Complete! 🎉',
                 body: 'Your Blender render has finished successfully.',
@@ -921,7 +1050,6 @@ class MobileCompanionServer extends EventEmitter {
               });
             } else if (event === 'error') {
               // Render error
-              console.log('❌ SENDING RENDER ERROR NOTIFICATION');
               console.log('  - Error message:', data.message);
               console.log('  - Message type:', typeof data.message);
               this.broadcastPushNotification({
@@ -938,9 +1066,8 @@ class MobileCompanionServer extends EventEmitter {
         });
 
         this.broadcastToClients('render-started', { processId });
-        
+
         // Send push notification for render start
-        console.log('🎬 SENDING RENDER STARTED NOTIFICATION');
         console.log('  - Process ID:', processId, 'Type:', typeof processId);
         this.broadcastPushNotification({
           title: 'Render Started 🎬',
@@ -951,7 +1078,7 @@ class MobileCompanionServer extends EventEmitter {
             startTime: new Date().toISOString()
           }
         });
-        
+
       } catch (error) {
         this.logger.error(`Error starting render: ${error.message}`);
         socket.emit('error', { message: error.message });
@@ -961,33 +1088,23 @@ class MobileCompanionServer extends EventEmitter {
 
     socket.on('stop-render', async (data) => {
       try {
-        console.log('🛑 STOP RENDER REQUEST RECEIVED:');
-        console.log('  - From device:', socket.deviceName);
-        console.log('  - Device ID:', socket.deviceId);
-        console.log('  - Request data:', data);
-        
         this.logger.info(`Stop render request from ${socket.deviceName}`);
-        
+
         if (data.processId) {
-          console.log('  - Stopping specific process:', data.processId);
           await this.renderManager.stopProcess(data.processId);
         } else {
-          console.log('  - Stopping all renders');
           this.renderManager.stopAllRenders();
         }
-        
+
         const stopData = {
           processId: data.processId || null,
           stoppedBy: socket.deviceName || 'Unknown',
           stopTime: new Date().toISOString()
         };
-        
-        console.log('📡 Broadcasting render-stopped event with data:', stopData);
+
         this.broadcastToClients('render-stopped', stopData);
-        
+
         // Send push notification for render stop
-        console.log('🛑 SENDING RENDER STOPPED NOTIFICATION');
-        console.log('  - Stopped by:', socket.deviceName, 'Type:', typeof socket.deviceName);
         this.broadcastPushNotification({
           title: 'Render Stopped 🛑',
           body: 'Your Blender render has been stopped.',
@@ -997,9 +1114,8 @@ class MobileCompanionServer extends EventEmitter {
             stopTime: new Date().toISOString()
           }
         });
-        
+
       } catch (error) {
-        console.log('❌ STOP RENDER ERROR:', error.message);
         this.logger.error(`Error stopping render: ${error.message}`);
         socket.emit('error', { message: error.message });
       }
@@ -1034,16 +1150,16 @@ class MobileCompanionServer extends EventEmitter {
       try {
         const presets = this.store.get('presets', []);
         const index = presets.findIndex(p => p.id === preset.id);
-        
+
         if (index >= 0) {
           presets[index] = preset;
         } else {
           presets.push(preset);
         }
-        
+
         this.store.set('presets', presets);
         this.broadcastToClients('preset-saved', preset);
-        
+
       } catch (error) {
         socket.emit('error', { message: 'Failed to save preset' });
       }
@@ -1062,49 +1178,26 @@ class MobileCompanionServer extends EventEmitter {
     // Push notification token registration
     socket.on('register-push-token', async (data) => {
       try {
-        console.log('📱 PUSH TOKEN REGISTRATION:');
-        console.log('  - Device Name:', socket.deviceName);
-        console.log('  - Device ID:', socket.deviceId);
-        console.log('  - Received data:', data);
-        console.log('  - API Endpoint:', this.apiEndpoint);
-        
         this.logger.info(`Push token registration from ${socket.deviceName}`);
-        
+
         if (!data.token) {
-          console.log('❌ Token missing in registration data');
           socket.emit('error', { message: 'Invalid push token' });
           return;
         }
-
-        console.log('✅ Valid token received:', data.token.substring(0, 20) + '...');
 
         // Store the token for this device
         this.deviceTokens.set(socket.deviceId, data.token);
         this.saveDeviceTokens();
 
-        console.log('💾 Token stored in memory and persisted');
-        console.log('📊 Total registered tokens:', this.deviceTokens.size);
-        
-        // List all registered devices
-        console.log('📋 All registered devices:');
-        for (const [deviceId, token] of this.deviceTokens.entries()) {
-          console.log(`  - ${deviceId}: ${token.substring(0, 20)}...`);
-        }
-
         this.logger.info(`Push token registered for device ${socket.deviceName}: ${data.token.substring(0, 20)}...`);
-        
+
         // Confirm registration
         socket.emit('push-token-registered', {
           success: true,
           deviceId: socket.deviceId
         });
-        
-        console.log('✅ Registration confirmation sent to mobile');
-        
+
       } catch (error) {
-        console.log('❌ Token registration FAILED!');
-        console.log('🔍 Error:', error.message);
-        console.log('🔍 Stack:', error.stack);
         this.logger.error(`Error registering push token: ${error.message}`);
         socket.emit('error', { message: 'Failed to register push token' });
       }
@@ -1113,13 +1206,8 @@ class MobileCompanionServer extends EventEmitter {
     // Test push notification handler
     socket.on('test-push-notification', async (data) => {
       try {
-        console.log('🧪 TEST PUSH NOTIFICATION REQUEST:');
-        console.log('  - From Device:', socket.deviceName);
-        console.log('  - Device ID:', socket.deviceId);
-        console.log('  - Test data:', data);
-        
         this.logger.info(`Test push notification request from ${socket.deviceName}`);
-        
+
         // Test API connectivity before sending notification
         const apiAvailable = await this.testApiConnectivity();
         if (!apiAvailable) {
@@ -1129,26 +1217,17 @@ class MobileCompanionServer extends EventEmitter {
         }
 
         // Prepare test data for API
-        console.log('🔍 TEST DATA DEBUG:');
-        console.log('  - Original data.data:', data.data);
-        console.log('  - data.data type:', typeof data.data);
-        
         const dataPayload = {
           type: 'test',
           timestamp: Date.now().toString(),
           ...data.data
         };
-        
-        console.log('  - Combined payload before stringify:', dataPayload);
-        
+
         // Ensure all values are strings
         const stringifiedData = {};
         for (const [key, value] of Object.entries(dataPayload)) {
-          console.log(`    - Converting ${key}: ${value} (${typeof value}) -> ${String(value)}`);
           stringifiedData[key] = String(value);
         }
-        
-        console.log('  - Final stringified data:', stringifiedData);
 
         const testNotification = {
           title: data.title || 'Test Push Notification 🧪',
@@ -1156,31 +1235,23 @@ class MobileCompanionServer extends EventEmitter {
           data: stringifiedData
         };
 
-        console.log('🚀 Sending test push notification...');
-        
         // Send to the requesting device
         const success = await this.sendPushNotification(socket.deviceId, testNotification);
-        
+
         if (success) {
-          console.log('✅ Test push notification sent successfully');
-          socket.emit('test-push-result', { 
-            success: true, 
-            message: 'Test push notification sent successfully' 
+          socket.emit('test-push-result', {
+            success: true,
+            message: 'Test push notification sent successfully'
           });
         } else {
-          console.log('❌ Failed to send test push notification');
-          console.log('🔍 Checking API errors in sendPushNotification logs above...');
-          socket.emit('test-push-result', { 
-            success: false, 
+          socket.emit('test-push-result', {
+            success: false,
             message: 'Failed to send test push notification - check desktop console for API errors',
             error: 'Push notification delivery failed'
           });
         }
-        
+
       } catch (error) {
-        console.log('❌ Test push notification FAILED!');
-        console.log('🔍 Error:', error.message);
-        console.log('🔍 Stack:', error.stack);
         this.logger.error(`Error sending test push notification: ${error.message}`);
         socket.emit('error', { message: 'Failed to send test push notification' });
       }
@@ -1188,8 +1259,8 @@ class MobileCompanionServer extends EventEmitter {
   }
 
   validateRenderParams(data) {
-    return data && 
-           typeof data.command === 'string' && 
+    return data &&
+           typeof data.command === 'string' &&
            data.command.trim().length > 0;
   }
 
@@ -1199,7 +1270,7 @@ class MobileCompanionServer extends EventEmitter {
       activeProcesses: this.renderManager.processes.size,
       timestamp: new Date().toISOString()
     };
-    
+
     socket.emit('render-status', status);
   }
 
@@ -1214,10 +1285,10 @@ class MobileCompanionServer extends EventEmitter {
     // Generate a 6-digit numeric code
     this.currentPairingCode = Math.floor(100000 + Math.random() * 900000).toString();
     this.pairingCodeExpiry = Date.now() + (5 * 60 * 1000); // 5 minutes
-    
+
     this.logger.info(`Generated pairing code: ${this.currentPairingCode}`);
     this.emit('pairing-code-generated', this.currentPairingCode);
-    
+
     return this.currentPairingCode;
   }
 
@@ -1263,7 +1334,7 @@ class MobileCompanionServer extends EventEmitter {
       const deviceName = this.pairedDevices.get(deviceId).name;
       this.pairedDevices.delete(deviceId);
       this.savePairedDevices();
-      
+
       // Disconnect any active connections for this device
       for (const [socketId, client] of this.connectedClients.entries()) {
         if (client.deviceId === deviceId) {
@@ -1271,7 +1342,7 @@ class MobileCompanionServer extends EventEmitter {
           this.connectedClients.delete(socketId);
         }
       }
-      
+
       this.logger.info(`Removed paired device: ${deviceName} (${deviceId})`);
       this.emit('device-removed', { deviceId, deviceName });
       return true;
@@ -1303,7 +1374,7 @@ class MobileCompanionServer extends EventEmitter {
 
     try {
       this.setupSocketIO();
-      
+
       await new Promise((resolve, reject) => {
         this.httpServer.listen(this.port, '0.0.0.0', (err) => {
           if (err) {
@@ -1319,7 +1390,7 @@ class MobileCompanionServer extends EventEmitter {
       console.log(`🌐 LISTENING ON: 0.0.0.0:${this.port}`);
       this.logger.info(`Mobile Companion Server started on port ${this.port}`);
       this.emit('server-started', { port: this.port });
-      
+
     } catch (error) {
       this.logger.error(`Failed to start server: ${error.message}`);
       throw error;
@@ -1347,10 +1418,10 @@ class MobileCompanionServer extends EventEmitter {
       this.isRunning = false;
       this.connectedClients.clear();
       this.clearPairingCode();
-      
+
       this.logger.info('Mobile Companion Server stopped');
       this.emit('server-stopped');
-      
+
     } catch (error) {
       this.logger.error(`Error stopping server: ${error.message}`);
       throw error;
@@ -1383,9 +1454,9 @@ class MobileCompanionServer extends EventEmitter {
         return results[iface][0];
       }
     }
-    
+
     this.logger.warn('No priority interface found. Falling back to the first available one.');
-    
+
     const firstInterface = Object.keys(results)[0];
     if (firstInterface) {
       this.logger.info(`Using fallback interface '${firstInterface}'. IP: ${results[firstInterface][0]}`);

@@ -228,8 +228,9 @@ class RenderManager extends EventEmitter {
       });
 
       const processId = process.pid.toString();
-      let currentFrame = 0;
       const { start, end } = this.getFrameRange(finalCommand);
+      let currentFrame = start; // Initialize to start frame
+      let frameAlreadyCounted = false; // Prevent double-counting when both "Video append" and "Time:" appear
       let memoryUsage = 0;
       let peakMemory = 0;
       let currentSample = 0;
@@ -271,28 +272,64 @@ class RenderManager extends EventEmitter {
         });
       }
 
+      // Error tracking for auto-termination
+      let errorCount = 0;
+      let lastErrorTime = Date.now();
+      const MAX_ERRORS_PER_SECOND = 50;
+
       process.stdout.on('data', (data) => {
         const output = data.toString();
 
-        // Log dell'output
-        if (sender && sender.send) {
+        // Check for error flood (auto-terminate if too many errors)
+        if (output.toLowerCase().includes('error') || output.toLowerCase().includes('warning')) {
+          const now = Date.now();
+          if (now - lastErrorTime < 1000) {
+            errorCount++;
+          } else {
+            errorCount = 1;
+            lastErrorTime = now;
+          }
+
+          // Auto-terminate if more than MAX_ERRORS_PER_SECOND errors per second
+          if (errorCount > MAX_ERRORS_PER_SECOND) {
+            console.error(`Process ${processId} generating too many errors (${errorCount}/s), terminating...`);
+            if (sender && sender.send) {
+              sender.send(`error-${processId}`, `Render terminated: Too many errors (${errorCount} errors/second). Check your scene for missing files or broken materials.`);
+            }
+            process.kill();
+            this.processes.delete(processId);
+            return;
+          }
+        }
+
+        // Only send render logs to frontend (filter out warnings and other non-render logs)
+        // Blender 5.x uses format: "00:04.390  render           | Message"
+        // Blender 4.x uses format: "Fra:X Mem:XXM"
+        
+        const isBlender5RenderLog = /\d{2}:\d{2}\.\d{3}\s+render\s+\|/.test(output);
+        const isBlender4RenderLog = output.includes('Fra:');
+        const isFinalSaveMessage = output.includes('💾 Render saved to:');
+        
+        // Show ALL render logs, plus final save message, but EXCLUDE everything else
+        const shouldLog = isBlender5RenderLog || isBlender4RenderLog || isFinalSaveMessage;
+
+        if (shouldLog && sender && sender.send) {
           sender.send(`progress-${processId}`, output);
         }
 
         // Parsing dell'output per estrarre informazioni
+        // Support both Blender 4.x (Fra:X) and Blender 5.x (Saved:) formats
+
+        // Blender 4.x format: "Fra:1 Mem:1.2M"
         if (output.includes('Fra:')) {
-          // Estrai il numero di frame
           const frameMatch = output.match(/Fra:(\d+)/);
           if (frameMatch) {
             currentFrame = parseInt(frameMatch[1]);
 
-            // Calcola il progresso gestendo il caso di singolo frame
             let progress;
             if (start === end) {
-              // Singolo frame: progresso basato sul completamento del frame
               progress = currentFrame >= start ? 100 : 0;
             } else {
-              // Animazione: progresso normale
               progress = ((currentFrame - start) / (end - start)) * 100;
             }
 
@@ -302,6 +339,223 @@ class RenderManager extends EventEmitter {
                 totalFrames: end,
                 progress
               });
+            }
+
+            // Update render output tracking
+            const renderOutput = this.renderOutputs.get(processId);
+            if (renderOutput) {
+              renderOutput.progress = progress;
+              renderOutput.currentFrame = currentFrame;
+              
+              // Update output file path for current frame
+              const newOutputFile = this.calculateOutputFilePath(finalCommand, currentFrame);
+              if (newOutputFile) {
+                renderOutput.outputFile = newOutputFile;
+              }
+              
+              this.renderOutputs.set(processId, renderOutput);
+              
+              // Emit render-output-progress event
+              this.emit('render-output-progress', {
+                processId,
+                progress,
+                currentFrame,
+                totalFrames: end,
+                outputFile: newOutputFile
+              });
+            }
+
+            // Emit progress event for mobile companion
+            this.emit('render-progress', {
+              processId,
+              event: 'progress',
+              data: {
+                currentFrame,
+                totalFrames: end,
+                percentage: progress
+              }
+            });
+          }
+        }
+
+        // Blender 5.x: Detect frame completion
+        // Pattern 1: "Video append frame X" - means frame X is saved, now starting frame X+1
+        const videoAppendMatch = output.match(/Video append frame (\d+)/);
+        if (videoAppendMatch && !frameAlreadyCounted) {
+          // Video frame number shows COMPLETED frame (1-indexed in sequence)
+          const completedVideoFrame = parseInt(videoAppendMatch[1]);
+          const completedSceneFrame = start + (completedVideoFrame - 1);
+          
+          // Current frame is the NEXT one being rendered
+          if (completedSceneFrame < end) {
+            currentFrame = completedSceneFrame + 1;
+          } else {
+            currentFrame = end; // Last frame was completed, stay at end
+          }
+          
+          frameAlreadyCounted = true;
+          console.log(`[BRS] Blender 5.x: Frame ${completedSceneFrame}/${end} saved, now rendering frame ${currentFrame}/${end}`);
+
+          // Progress based on completed frames
+          let progress = (completedVideoFrame / (end - start + 1)) * 100;
+
+          if (sender && sender.send) {
+            sender.send(`progress-${processId}`, {
+              currentFrame,
+              totalFrames: end,
+              progress
+            });
+          }
+
+          // Update render output tracking with new frame
+          const renderOutput = this.renderOutputs.get(processId);
+          if (renderOutput) {
+            renderOutput.progress = progress;
+            renderOutput.currentFrame = currentFrame;
+            
+            // Update output file path for current frame
+            const newOutputFile = this.calculateOutputFilePath(finalCommand, currentFrame);
+            if (newOutputFile) {
+              renderOutput.outputFile = newOutputFile;
+            }
+            
+            this.renderOutputs.set(processId, renderOutput);
+            
+            // Emit render-output-progress event
+            this.emit('render-output-progress', {
+              processId,
+              progress,
+              currentFrame,
+              totalFrames: end,
+              outputFile: newOutputFile
+            });
+          }
+
+          // Emit progress event for mobile companion
+          this.emit('render-progress', {
+            processId,
+            event: 'progress',
+            data: {
+              currentFrame,
+              totalFrames: end,
+              percentage: progress
+            }
+          });
+        }
+
+        // Pattern 2: "Time: XX:XX (Saving: XX:XX)" - frame completed, move to next
+        // Only use this if "Video append frame" wasn't found (fallback for images)
+        if (!videoAppendMatch && output.includes('Time:') && output.includes('(Saving:') && !frameAlreadyCounted) {
+          // Only increment if we're rendering an animation
+          if (end > start) {
+            const completedFrame = currentFrame;
+            const completedFrameIndex = completedFrame - start + 1;
+            
+            // Move to next frame (the one that's starting now)
+            if (currentFrame < end) {
+              currentFrame++;
+            }
+            
+            frameAlreadyCounted = true;
+            console.log(`[BRS] Blender 5.x: Frame ${completedFrame}/${end} saved, now rendering frame ${currentFrame}/${end}`);
+
+            // Progress based on completed frames
+            let progress = (completedFrameIndex / (end - start + 1)) * 100;
+
+            if (sender && sender.send) {
+              sender.send(`progress-${processId}`, {
+                currentFrame,
+                totalFrames: end,
+                progress
+              });
+            }
+
+            // Update render output tracking with new frame
+            const renderOutput = this.renderOutputs.get(processId);
+            if (renderOutput) {
+              renderOutput.progress = progress;
+              renderOutput.currentFrame = currentFrame;
+              
+              // Update output file path for current frame
+              const newOutputFile = this.calculateOutputFilePath(finalCommand, currentFrame);
+              if (newOutputFile) {
+                renderOutput.outputFile = newOutputFile;
+              }
+              
+              this.renderOutputs.set(processId, renderOutput);
+              
+              // Emit render-output-progress event
+              this.emit('render-output-progress', {
+                processId,
+                progress,
+                currentFrame,
+                totalFrames: end,
+                outputFile: newOutputFile
+              });
+            }
+
+            // Emit progress event for mobile companion
+            this.emit('render-progress', {
+              processId,
+              event: 'progress',
+              data: {
+                currentFrame,
+                totalFrames: end,
+                percentage: progress
+              }
+            });
+          }
+        }
+
+        // Reset frame counted flag when starting a new frame (detected by "Sample 0/X")
+        if (output.includes('Sample 0/')) {
+          frameAlreadyCounted = false;
+        }
+
+        // Blender 5.x format: "Remaining: 00:09.44 | Mem: 1513M | Rendered 0/4 Tiles, Sample 1/128"
+        if (output.includes('Sample')) {
+          const sampleMatch = output.match(/Sample (\d+)\/(\d+)/);
+          const tilesMatch = output.match(/Rendered (\d+)\/(\d+) Tiles/);
+          const remainingMatch = output.match(/Remaining:\s*([\d:\.]+)/);
+
+          if (sampleMatch) {
+            currentSample = parseInt(sampleMatch[1]);
+            totalSamples = parseInt(sampleMatch[2]);
+
+            // Calculate progress based on samples
+            // For animations, calculate overall progress considering current frame + sample progress
+            let progress;
+            if (end > start) {
+              // Animation: progress = (completed frames + current sample progress) / total frames
+              const completedFrames = currentFrame - start;
+              const sampleProgress = (currentSample / totalSamples);
+              progress = ((completedFrames + sampleProgress) / (end - start + 1)) * 100;
+            } else {
+              // Single frame: progress based only on samples
+              progress = (currentSample / totalSamples) * 100;
+            }
+
+            const progressData = {
+              currentFrame: currentFrame,
+              totalFrames: end,
+              progress,
+              currentSample,
+              totalSamples
+            };
+
+            // Add tiles info if available
+            if (tilesMatch) {
+              progressData.currentTile = parseInt(tilesMatch[1]);
+              progressData.totalTiles = parseInt(tilesMatch[2]);
+            }
+
+            // Add remaining time if available
+            if (remainingMatch) {
+              progressData.remainingTime = remainingMatch[1];
+            }
+
+            if (sender && sender.send) {
+              sender.send(`progress-${processId}`, progressData);
             }
 
             // Update render output tracking
@@ -341,12 +595,16 @@ class RenderManager extends EventEmitter {
           }
 
           // Estrai l'uso della memoria
-          const memMatch = output.match(/Mem:([\d.]+)([MG]).*Peak\s+([\d.]+)([MG])/);
+          // Support both formats: "Mem:100M Peak 200M" (4.x) and "Mem: 1513M" (5.x)
+          const memMatch = output.match(/Mem:\s*([\d.]+)([MG])/);
           if (memMatch) {
             const current = parseFloat(memMatch[1]);
-            const peak = parseFloat(memMatch[3]);
             const currentUnit = memMatch[2];
-            const peakUnit = memMatch[4];
+
+            // Try to find peak if available
+            const peakMatch = output.match(/Peak\s+([\d.]+)([MG])/);
+            const peak = peakMatch ? parseFloat(peakMatch[1]) : current;
+            const peakUnit = peakMatch ? peakMatch[2] : currentUnit;
 
             // Converti in MB
             memoryUsage = currentUnit === 'G' ? current * 1024 : current;
@@ -370,11 +628,14 @@ class RenderManager extends EventEmitter {
             });
           }
 
-          // Parse sample progress for Cycles
-          const sampleMatch = output.match(/Sample (\d+)\/(\d+)/);
-          if (sampleMatch) {
-            currentSample = parseInt(sampleMatch[1]);
-            totalSamples = parseInt(sampleMatch[2]);
+          // Sample progress is now handled above in Blender 5.x format parsing
+          // This section is kept for backwards compatibility but likely won't trigger
+          // since the new parsing above catches it first
+          const legacySampleMatch = output.match(/Sample (\d+)\/(\d+)/);
+          if (legacySampleMatch && !output.includes('Rendered')) {
+            // Only process if it's old format (no "Rendered X/Y Tiles")
+            currentSample = parseInt(legacySampleMatch[1]);
+            totalSamples = parseInt(legacySampleMatch[2]);
             if (sender && sender.send) {
               sender.send(`progress-${processId}`, {
                 currentSample,
@@ -409,8 +670,23 @@ class RenderManager extends EventEmitter {
           }
         }
 
-        // Check for errors
+        // Check for errors (but filter out addon errors)
         if (output.toLowerCase().includes('error') || output.toLowerCase().includes('exception')) {
+          // Filter out addon errors
+          const isAddonError = output.includes('bpy.app.handlers') ||
+                              output.includes('Warning keymap') ||
+                              output.includes('Exception in module') ||
+                              output.includes('Traceback (most recent call last)') ||
+                              output.includes('AttributeError') ||
+                              output.includes('addon');
+          
+          // Skip addon errors completely
+          if (isAddonError) {
+            console.log(`[BRS] Filtered out addon error from stdout: ${output.substring(0, 100)}...`);
+            return; // Stop processing this output line
+          }
+          
+          // Only send render-related errors
           if (sender && sender.send) {
             sender.send(`error-${processId}`, output);
           }
@@ -479,6 +755,21 @@ class RenderManager extends EventEmitter {
 
       process.stderr.on('data', (data) => {
         const error = data.toString();
+        
+        // Filter out addon errors and warnings - only show render-related errors
+        const isAddonError = error.includes('bpy.app.handlers') ||
+                            error.includes('Warning keymap') ||
+                            error.includes('Exception in module') ||
+                            error.includes('Traceback (most recent call last)') ||
+                            error.includes('AttributeError') ||
+                            error.includes('addon');
+        
+        // Skip addon errors completely
+        if (isAddonError) {
+          console.log(`[BRS] Filtered out addon error: ${error.substring(0, 100)}...`);
+          return;
+        }
+        
         if (this.isCriticalError(error)) {
           if (sender && sender.send) {
             sender.send(`error-${processId}`, error);
@@ -494,6 +785,7 @@ class RenderManager extends EventEmitter {
             error: error
           });
         } else {
+          // Only send non-critical errors if they're render-related
           if (sender && sender.send) {
             sender.send(`progress-${processId}`, `ERROR: ${error}`);
           }
@@ -563,6 +855,17 @@ class RenderManager extends EventEmitter {
 
       process.on('error', (error) => {
         const errorMessage = error.message;
+        
+        // Filter out addon errors - only show critical process errors
+        const isAddonError = errorMessage.includes('addon') ||
+                            errorMessage.includes('handler') ||
+                            errorMessage.includes('keymap');
+        
+        if (isAddonError) {
+          console.log(`[BRS] Filtered out addon error from process.on('error'): ${errorMessage}`);
+          return;
+        }
+        
         if (this.isCriticalError(errorMessage)) {
           if (sender && sender.send) {
             sender.send(`error-${processId}`, errorMessage);
@@ -578,6 +881,7 @@ class RenderManager extends EventEmitter {
             error: errorMessage
           });
         } else {
+          // Only send if it's render-related
           if (sender && sender.send) {
             sender.send(`progress-${processId}`, `ERROR: ${errorMessage}`);
           }

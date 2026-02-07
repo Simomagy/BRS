@@ -13,17 +13,13 @@ interface HistoryState {
 export const useHistoryStore = create<HistoryState>((set, get) => ({
 	items: [],
 	addItem: (item) => {
-		// Controlla se esiste già un item con lo stesso comando
-		const existingItem = get().items.find(existing => existing.command === item.command);
-		if (existingItem) return;
-
 		const newItem = {
 			...item,
 			id: uuidv4(),
 		};
 
 		set((state) => {
-			const newItems = [...state.items, newItem];
+			const newItems = [newItem, ...state.items]; // Aggiungi all'inizio per avere i più recenti in alto
 			// Salva la history aggiornata
 			window.electronAPI.saveHistory(newItems);
 			return { items: newItems };

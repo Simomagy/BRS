@@ -165,6 +165,21 @@ function registerAllHandlers(dependencies) {
       return { success: false, error: error.message };
     }
   });
+
+  // Render Manager - Get active processes
+  ipcMain.handle('get-active-processes', async () => {
+    try {
+      if (!renderManager) {
+        return { success: false, error: 'Render manager not available' };
+      }
+
+      const processIds = renderManager.getActiveProcesses();
+      return { success: true, processIds };
+    } catch (error) {
+      console.error('Error getting active processes:', error);
+      return { success: false, error: error.message };
+    }
+  });
 }
 
 module.exports = { registerAllHandlers };

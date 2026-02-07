@@ -5,7 +5,7 @@ import { formatDistanceToNow, format } from 'date-fns';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
-import { Trash2, Info, CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
+import { Trash2, Info, CheckCircle2, XCircle, AlertCircle, FolderOpen, FileWarning } from 'lucide-react';
 import {
 	Dialog,
 	DialogContent,
@@ -62,7 +62,18 @@ const HistoryItemDetails: React.FC<{
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 }> = ({ item, open, onOpenChange }) => {
-	const itemName = item.name.replace('"', '').charAt(0).toUpperCase() + item.name.replace('"', '').slice(1);
+	const handleOpenResult = async () => {
+		if (!window.electronAPI) return;
+
+		// Usa outputDirectory se disponibile, altrimenti estrai dalla outputPath
+		const folderPath = item.parameters.outputDirectory ||
+			item.parameters.outputPath.split(/[\\/]/).slice(0, -1).join('/');
+
+		if (folderPath) {
+			await window.electronAPI.openPath(folderPath);
+		}
+	};
+
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="max-w-2xl overflow-hidden">
@@ -74,7 +85,7 @@ const HistoryItemDetails: React.FC<{
 					<div className="grid grid-cols-2 gap-4">
 						<div className="space-y-2">
 							<h4 className="text-sm font-medium text-muted-foreground">Name</h4>
-							<p className="text-sm truncate">{itemName}</p>
+							<p className="text-sm truncate">{item.name}</p>
 						</div>
 						<div className="space-y-2">
 							<h4 className="text-sm font-medium text-muted-foreground">Status</h4>
@@ -129,24 +140,32 @@ const HistoryItemDetails: React.FC<{
 					<div className="space-y-2">
 						<h4 className="text-sm font-medium text-muted-foreground">Parameters</h4>
 						<div className="bg-neutral-950 p-4 rounded-lg">
-							<div className="space-y-2">
-								<div className="flex justify-between">
+							<div className="space-y-3">
+								<div className="flex justify-between items-center">
 									<span className="text-sm text-muted-foreground">Blender Version:</span>
 									<span className="text-sm">{item.parameters.blenderVersion}</span>
 								</div>
-								<div className="flex justify-between">
+								<div className="flex justify-between items-center">
 									<span className="text-sm text-muted-foreground">Render Engine:</span>
 									<span className="text-sm">{item.parameters.renderEngine}</span>
 								</div>
-								<div className="flex justify-between">
-									<span className="text-sm text-muted-foreground">Output Path:</span>
-									<span className="text-sm truncate">{item.parameters.outputPath}</span>
+								<div className="flex justify-between items-center gap-4">
+									<span className="text-sm text-muted-foreground">Output:</span>
+									<Button
+										variant="outline"
+										size="sm"
+										onClick={handleOpenResult}
+										className="gap-2"
+									>
+										<FolderOpen className="h-3 w-3" />
+										Open Result
+									</Button>
 								</div>
-								<div className="flex justify-between">
+								<div className="flex justify-between items-center">
 									<span className="text-sm text-muted-foreground">Total Frames:</span>
 									<span className="text-sm">{item.parameters.totalFrames}</span>
 								</div>
-								<div className="flex justify-between">
+								<div className="flex justify-between items-center">
 									<span className="text-sm text-muted-foreground">Last Used:</span>
 									<span className="text-sm">{format(new Date(item.parameters.lastUsed), "PPP 'at' HH:mm")}</span>
 								</div>
@@ -174,13 +193,13 @@ const HistoryPanel: React.FC = () => {
 	return (
 		<div className="flex flex-col h-full">
 			<div className="flex-none p-4 border-b">
-				<div className="flex items-center justify-between">
-					<h2 className="text-lg font-semibold">Render History</h2>
+				<div className="flex items-center justify-center">
 					<Button
 						variant="ghost"
 						size="sm"
 						onClick={clearHistory}
-						className="text-destructive hover:text-destructive"
+						disabled={items.length === 0}
+						className="text-destructive hover:text-destructive w-full"
 					>
 						<Trash2 className="h-4 w-4 mr-2" />
 						Clear History
@@ -188,10 +207,11 @@ const HistoryPanel: React.FC = () => {
 				</div>
 			</div>
 
-			<ScrollArea className="flex-1">
-				<div className="p-4 space-y-4">
+			<ScrollArea className="flex-1 overflow-y-auto">
+				<div className="p-4 flex flex-col gap-4">
 					{items.length === 0 ? (
 						<div className="text-center text-muted-foreground py-8">
+							<FileWarning className="h-10 w-10 mx-auto mb-4" />
 							No render history available
 						</div>
 					) : (
@@ -222,6 +242,10 @@ const HistoryPanel: React.FC = () => {
 												<span className="text-sm text-muted-foreground">Duration</span>
 												<span className="text-sm">{formatDuration(item.duration)}</span>
 											</div>
+											<div className="flex justify-between items-center">
+												<span className="text-sm text-muted-foreground">Blender {item.parameters.blenderVersion}</span>
+												<span className="text-sm">{item.parameters.renderEngine}</span>
+											</div>
 											{item.parameters.totalFrames > 0 && (
 												<div className="flex justify-between items-center">
 													<span className="text-sm text-muted-foreground">Frames</span>
@@ -233,6 +257,22 @@ const HistoryPanel: React.FC = () => {
 												<span className="text-sm">{item.progress.toFixed(1)}%</span>
 											</div>
 											<Progress value={item.progress} className="h-2" />
+											<Button
+												variant="outline"
+												size="sm"
+												onClick={(e) => {
+													e.stopPropagation();
+													const folderPath = item.parameters.outputDirectory ||
+														item.parameters.outputPath.split(/[\\/]/).slice(0, -1).join('/');
+													if (folderPath && window.electronAPI) {
+														window.electronAPI.openPath(folderPath);
+													}
+												}}
+												className="w-full gap-2 mt-2"
+											>
+												<FolderOpen className="h-3 w-3" />
+												Open Result
+											</Button>
 										</div>
 									</div>
 								</ContextMenuTrigger>

@@ -16,6 +16,7 @@ export interface HistoryItem {
 		blenderVersion: string;
 		renderEngine: string;
 		outputPath: string;
+		outputDirectory?: string;
 		totalFrames: number;
 		lastUsed: string;
 	};

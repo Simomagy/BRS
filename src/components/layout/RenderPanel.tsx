@@ -22,6 +22,7 @@ import {
   Terminal,
   AlertTriangle,
   AlertCircle,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useQueueStore } from "@/store/queueStore";
@@ -38,6 +39,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Sheet,
+  SheetClose,
   SheetContent,
   SheetHeader,
   SheetTitle,
@@ -53,6 +55,8 @@ interface RenderPanelProps {
   onAddLog: (message: string, level?: LogLevel) => void;
   onToggleLogPanel: () => void;
   isLogPanelVisible: boolean;
+  externalProcessId?: string | null;
+  onExternalProcessHandled?: () => void;
 }
 
 interface ProgressEventData {
@@ -65,6 +69,9 @@ interface ProgressEventData {
   totalSamples?: number;
   inCompositing?: boolean;
   compositingOperation?: string;
+  currentTile?: number;
+  totalTiles?: number;
+  remainingTime?: string;
 }
 
 interface SystemStats {
@@ -98,6 +105,8 @@ const RenderPanel: React.FC<RenderPanelProps> = ({
   onAddLog,
   onToggleLogPanel,
   isLogPanelVisible,
+  externalProcessId = null,
+  onExternalProcessHandled,
 }) => {
   const [isRendering, setIsRendering] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -114,11 +123,129 @@ const RenderPanel: React.FC<RenderPanelProps> = ({
   const [elapsedTime, setElapsedTime] = useState(0);
   const [queueName, setQueueName] = useState("");
   const [systemStats, setSystemStats] = useState<SystemStats | null>(null);
+  const [currentTile, setCurrentTile] = useState(0);
+  const [totalTiles, setTotalTiles] = useState(0);
+  const [remainingTime, setRemainingTime] = useState<string>("");
+  const [samplesDetected, setSamplesDetected] = useState(false);
+  const [isWarmingUp, setIsWarmingUp] = useState(false);
+  const [renderCompleted, setRenderCompleted] = useState(false);
   const addItem = useQueueStore((state) => state.addItem);
   const addHistoryItem = useHistoryStore((state) => state.addItem);
   const [historyOpen, setHistoryOpen] = useState(false);
   const items = useHistoryStore((state) => state.items);
   const renderStartTimeRef = useRef<Date | null>(null);
+
+  // Rate limiting for logs and toasts
+  const logBufferRef = useRef<string[]>([]);
+  const lastLogFlushRef = useRef<number>(Date.now());
+  const toastCountRef = useRef<{ error: number, warning: number, lastReset: number }>({
+    error: 0,
+    warning: 0,
+    lastReset: Date.now()
+  });
+
+  const resetState = React.useCallback(() => {
+    setIsRendering(false);
+    setProgress(0);
+    setCurrentFrame(0);
+    setTotalFrames(0);
+    setStartTime(null);
+    setElapsedTime(0);
+    setMemoryUsage(0);
+    setPeakMemory(0);
+    setCurrentSample(0);
+    setTotalSamples(0);
+    setInCompositing(false);
+    setCompositingOperation("");
+    setCurrentProcessId(null);
+    setCurrentTile(0);
+    setTotalTiles(0);
+    setRemainingTime("");
+    setSamplesDetected(false);
+    setIsWarmingUp(false);
+    setRenderCompleted(false);
+
+    // Reset rate limiting
+    logBufferRef.current = [];
+    lastLogFlushRef.current = Date.now();
+    toastCountRef.current = { error: 0, warning: 0, lastReset: Date.now() };
+  }, []);
+
+  // Flush log buffer periodically
+  const flushLogBuffer = React.useCallback(() => {
+    if (logBufferRef.current.length > 0) {
+      const logsToAdd = logBufferRef.current.slice(0, 50); // Max 50 logs at once
+      // Add logs using onAddLog to avoid circular dependency
+      logsToAdd.forEach(log => {
+        const level = log.toLowerCase().includes('error') ? 'error' :
+                     log.toLowerCase().includes('warning') ? 'warning' : 'info';
+        onAddLog(log, level as LogLevel);
+      });
+      logBufferRef.current = logBufferRef.current.slice(50);
+    }
+    lastLogFlushRef.current = Date.now();
+  }, [onAddLog]);
+
+  // Throttled addLog with buffering
+  const addLogThrottled = React.useCallback((message: string, level: string = 'info') => {
+    // Skip verbose/repetitive logs
+    if (message.includes('Remaining:') || message.includes('Sample')) {
+      return; // Don't log progress updates
+    }
+
+    logBufferRef.current.push(message);
+
+    // Flush buffer every 500ms
+    const now = Date.now();
+    if (now - lastLogFlushRef.current > 500) {
+      flushLogBuffer();
+    }
+  }, [flushLogBuffer]);
+
+  // Rate-limited toast
+  const showToastRateLimited = React.useCallback((type: 'error' | 'warning' | 'success', title: string, description: string) => {
+    const now = Date.now();
+    const toastLimit = toastCountRef.current;
+
+    // Reset counters every 10 seconds
+    if (now - toastLimit.lastReset > 10000) {
+      toastLimit.error = 0;
+      toastLimit.warning = 0;
+      toastLimit.lastReset = now;
+    }
+
+    // Limit: max 3 error toasts and 2 warning toasts per 10 seconds
+    if (type === 'error' && toastLimit.error >= 3) {
+      console.warn('Toast rate limit reached for errors');
+      return;
+    }
+    if (type === 'warning' && toastLimit.warning >= 2) {
+      console.warn('Toast rate limit reached for warnings');
+      return;
+    }
+
+    // Show toast and increment counter
+    if (type === 'error') {
+      toast.error(title, { description });
+      toastLimit.error++;
+    } else if (type === 'warning') {
+      toast.warning(title, { description });
+      toastLimit.warning++;
+    } else {
+      toast.success(title, { description });
+    }
+  }, []);
+
+  // Auto-hide render completed overlay after 3 seconds and reset
+  useEffect(() => {
+    if (renderCompleted) {
+      const timer = setTimeout(() => {
+        resetState();
+      }, 3000);
+
+      return () => clearTimeout(timer);
+    }
+  }, [renderCompleted, resetState]);
 
   useEffect(() => {
     let timer: NodeJS.Timeout;
@@ -144,6 +271,100 @@ const RenderPanel: React.FC<RenderPanelProps> = ({
   const addLog = (message: string, level: LogLevel = "info") => {
     onAddLog(message, level);
   };
+
+  // Handle external render process ID
+  useEffect(() => {
+    if (externalProcessId && !isRendering) {
+      console.log('External process ID received:', externalProcessId);
+      setCurrentProcessId(externalProcessId);
+      setIsRendering(true);
+      setStartTime(new Date());
+      setCurrentTile(0);
+      setTotalTiles(0);
+      setRemainingTime("");
+      setSamplesDetected(false);
+      setIsWarmingUp(true); // Start warm-up phase
+      setRenderCompleted(false);
+      addLog(`External render started: ${externalProcessId}`, 'info');
+
+      // Setup listeners for this external process
+      window.electronAPI.removeAllListeners(`progress-${externalProcessId}`);
+      window.electronAPI.removeAllListeners(`complete-${externalProcessId}`);
+      window.electronAPI.removeAllListeners(`error-${externalProcessId}`);
+
+      window.electronAPI.on(`progress-${externalProcessId}`, (data: string | ProgressEventData) => {
+        if (typeof data === "string") {
+          // Use throttled logging to prevent UI freeze
+          addLogThrottled(data);
+        } else if (typeof data === "object" && data !== null) {
+          const progressData = data as ProgressEventData;
+
+          // End warm-up when we receive any progress data
+          if (progressData.progress !== undefined || progressData.currentSample !== undefined || progressData.currentTile !== undefined) {
+            setIsWarmingUp(false);
+          }
+
+          if (progressData.progress !== undefined) setProgress(progressData.progress);
+          if (progressData.currentFrame !== undefined) setCurrentFrame(progressData.currentFrame);
+          if (progressData.totalFrames !== undefined) setTotalFrames(progressData.totalFrames);
+          if (progressData.memoryUsage !== undefined) setMemoryUsage(progressData.memoryUsage);
+          if (progressData.peakMemory !== undefined) setPeakMemory(progressData.peakMemory);
+          if (progressData.currentSample !== undefined) {
+            setCurrentSample(progressData.currentSample);
+            setSamplesDetected(true);
+          }
+          if (progressData.totalSamples !== undefined) setTotalSamples(progressData.totalSamples);
+          if (progressData.currentTile !== undefined) setCurrentTile(progressData.currentTile);
+          if (progressData.totalTiles !== undefined) setTotalTiles(progressData.totalTiles);
+          if (progressData.remainingTime !== undefined) setRemainingTime(progressData.remainingTime);
+          if (progressData.inCompositing !== undefined) setInCompositing(progressData.inCompositing);
+          if (progressData.compositingOperation !== undefined) setCompositingOperation(progressData.compositingOperation);
+        }
+      });
+
+      window.electronAPI.on(`complete-${externalProcessId}`, (code: number) => {
+        window.electronAPI.removeAllListeners(`progress-${externalProcessId}`);
+        window.electronAPI.removeAllListeners(`complete-${externalProcessId}`);
+        window.electronAPI.removeAllListeners(`error-${externalProcessId}`);
+
+        if (code === 0) {
+          // Set progress to 100% and mark as completed
+          setProgress(100);
+          setRenderCompleted(true);
+
+          addLog("External render completed successfully", "info");
+          flushLogBuffer(); // Flush remaining logs
+          toast.success("Render Complete", { description: "External render completed successfully." });
+        } else {
+          setIsRendering(false);
+          setStartTime(null);
+          setCurrentProcessId(null);
+          addLog(`External render failed with code ${code}`, "error");
+        }
+
+        if (onExternalProcessHandled) {
+          onExternalProcessHandled();
+        }
+      });
+
+      window.electronAPI.on(`error-${externalProcessId}`, (error: string) => {
+        window.electronAPI.removeAllListeners(`progress-${externalProcessId}`);
+        window.electronAPI.removeAllListeners(`complete-${externalProcessId}`);
+        window.electronAPI.removeAllListeners(`error-${externalProcessId}`);
+
+        setIsRendering(false);
+        setStartTime(null);
+        setCurrentProcessId(null);
+        addLog(`External render error: ${error}`, "error");
+        flushLogBuffer(); // Flush remaining logs
+        showToastRateLimited("error", "Render Failed", error);
+
+        if (onExternalProcessHandled) {
+          onExternalProcessHandled();
+        }
+      });
+    }
+  }, [externalProcessId]);
 
   // Add system monitoring effect
   useEffect(() => {
@@ -197,13 +418,26 @@ const RenderPanel: React.FC<RenderPanelProps> = ({
       }
     }
 
-    // Estrai il percorso di output (dopo -o)
+    // Estrai il file .blend dal comando (dopo -b)
+    const blendFileMatch = command.match(/-b\s+"([^"]+)"/);
+    let blendFileName = "Render";
+    if (blendFileMatch) {
+      const filePath = blendFileMatch[1];
+      // Prendi solo il nome del file senza percorso ed estensione
+      const fileName = filePath.split(/[\\/]/).pop();
+      if (fileName) {
+        blendFileName = fileName.replace(/\.blend$/i, '');
+      }
+    }
+
+    // Estrai il percorso di output completo (dopo -o)
     const outputMatch = command.match(/-o\s+"([^"]+)"/);
     let outputPath = "";
+    let outputDirectory = "";
     if (outputMatch) {
       outputPath = outputMatch[1];
-      // Rimuovi il nome del file per ottenere solo la directory
-      outputPath = outputPath.split("/").slice(0, -1).join("/");
+      // Salva anche la directory
+      outputDirectory = outputPath.split(/[\\/]/).slice(0, -1).join("/");
     }
 
     // Estrai il motore di rendering (dopo -E)
@@ -228,35 +462,45 @@ const RenderPanel: React.FC<RenderPanelProps> = ({
 
     // Estrai i frame dal comando
     let totalFrames = 0;
+    let startFrame = 1;
 
     // Controlla se è un'animazione (con -a)
     if (command.includes(" -a")) {
       const startMatch = command.match(/-s\s+(\d+)/);
       const endMatch = command.match(/-e\s+(\d+)/);
       if (startMatch && endMatch) {
-        const start = parseInt(startMatch[1]);
+        startFrame = parseInt(startMatch[1]);
         const end = parseInt(endMatch[1]);
-        totalFrames = end - start + 1;
+        totalFrames = end - startFrame + 1;
       }
     }
     // Controlla se è un frame singolo (con -f)
     else if (command.includes(" -f ")) {
+      const frameMatch = command.match(/-f\s+(\d+)/);
+      if (frameMatch) {
+        startFrame = parseInt(frameMatch[1]);
+      }
       totalFrames = 1;
     }
 
     console.log("📊 Extracted parameters from command:", {
+      blendFileName,
       blenderVersion,
       renderEngine,
       outputPath,
+      outputDirectory,
       totalFrames,
       command: command.substring(0, 100) + "...",
     });
 
     return {
+      blendFileName,
       blenderVersion,
       renderEngine,
       outputPath,
+      outputDirectory,
       totalFrames,
+      startFrame,
       lastUsed: new Date().toISOString(),
     };
   };
@@ -280,19 +524,29 @@ const RenderPanel: React.FC<RenderPanelProps> = ({
     const finalCurrentFrame =
       status === "completed" ? finalTotalFrames : currentFrame;
 
+    // Genera nome entry: "NomeFile {N}"
+    // Carica history esistente per calcolare il counter
+    const existingHistory = await window.electronAPI.loadHistory();
+    const sameNameCount = existingHistory.filter(item =>
+      item.name.startsWith(parameters.blendFileName + " // ")
+    ).length;
+    const entryName = `${parameters.blendFileName} // ${sameNameCount + 1}`;
+
     console.log("📊 History item data:", {
       duration,
+      entryName,
       actualStartTime: actualStartTime.toISOString(),
       endTime: now.toISOString(),
       blenderVersion: parameters.blenderVersion,
       renderEngine: parameters.renderEngine,
+      outputPath: parameters.outputPath,
       totalFrames: finalTotalFrames,
       currentFrame: finalCurrentFrame,
       status,
     });
 
     return {
-      name: command.split("/").pop() || "Render",
+      name: entryName,
       command: command,
       status,
       startTime: actualStartTime.toISOString(),
@@ -308,6 +562,7 @@ const RenderPanel: React.FC<RenderPanelProps> = ({
         blenderVersion: parameters.blenderVersion,
         renderEngine: parameters.renderEngine,
         outputPath: parameters.outputPath,
+        outputDirectory: parameters.outputDirectory,
         totalFrames: finalTotalFrames,
         lastUsed: now.toISOString(),
       },
@@ -337,6 +592,12 @@ const RenderPanel: React.FC<RenderPanelProps> = ({
     setTotalSamples(0);
     setInCompositing(false);
     setCompositingOperation("");
+    setCurrentTile(0);
+    setTotalTiles(0);
+    setRemainingTime("");
+    setSamplesDetected(false);
+    setIsWarmingUp(true); // Start warm-up phase
+    setRenderCompleted(false);
 
     try {
       const { id } = await window.electronAPI.executeCommand(command);
@@ -353,9 +614,11 @@ const RenderPanel: React.FC<RenderPanelProps> = ({
         `progress-${id}`,
         (data: string | ProgressEventData) => {
           if (typeof data === "string") {
-            addLog(data);
+            // Use throttled logging to prevent UI freeze
+            addLogThrottled(data);
           } else if (typeof data === "object" && data !== null) {
             const progressData = data as ProgressEventData;
+
             if (
               "progress" in progressData &&
               progressData.progress !== undefined
@@ -386,17 +649,41 @@ const RenderPanel: React.FC<RenderPanelProps> = ({
             ) {
               setPeakMemory(progressData.peakMemory);
             }
+            // End warm-up when we receive any progress data
+            if (progressData.progress !== undefined || progressData.currentSample !== undefined || progressData.currentTile !== undefined) {
+              setIsWarmingUp(false);
+            }
+
             if (
               "currentSample" in progressData &&
               progressData.currentSample !== undefined
             ) {
               setCurrentSample(progressData.currentSample);
+              setSamplesDetected(true); // Mark that we detected samples
             }
             if (
               "totalSamples" in progressData &&
               progressData.totalSamples !== undefined
             ) {
               setTotalSamples(progressData.totalSamples);
+            }
+            if (
+              "currentTile" in progressData &&
+              progressData.currentTile !== undefined
+            ) {
+              setCurrentTile(progressData.currentTile);
+            }
+            if (
+              "totalTiles" in progressData &&
+              progressData.totalTiles !== undefined
+            ) {
+              setTotalTiles(progressData.totalTiles);
+            }
+            if (
+              "remainingTime" in progressData &&
+              progressData.remainingTime !== undefined
+            ) {
+              setRemainingTime(progressData.remainingTime);
             }
             if (
               "inCompositing" in progressData &&
@@ -422,9 +709,12 @@ const RenderPanel: React.FC<RenderPanelProps> = ({
         window.electronAPI.removeAllListeners(`error-${id}`);
 
         if (code === 0) {
-          setIsRendering(false);
-          setStartTime(null);
+          // Set progress to 100% and mark as completed
+          setProgress(100);
+          setRenderCompleted(true);
+
           addLog("Render completed successfully", "info");
+          flushLogBuffer(); // Flush remaining logs
           toast.success("Render Complete", {
             description: "The render has completed successfully.",
           });
@@ -438,9 +728,8 @@ const RenderPanel: React.FC<RenderPanelProps> = ({
           addHistoryItem(historyItem);
         } else {
           addLog(`Render failed with code ${code}`, "error");
-          toast.error("Render Failed", {
-            description: `The render failed with code ${code}.`,
-          });
+          flushLogBuffer(); // Flush remaining logs
+          showToastRateLimited("error", "Render Failed", `The render failed with code ${code}.`);
 
           // Aggiungi alla cronologia come fallito - usa la variabile locale renderStartTime
           const historyItem = await createHistoryItem(
@@ -464,9 +753,8 @@ const RenderPanel: React.FC<RenderPanelProps> = ({
           setIsRendering(false);
           setStartTime(null);
           addLog(error, "error");
-          toast.error("Render Error", {
-            description: error,
-          });
+          flushLogBuffer(); // Flush remaining logs
+          showToastRateLimited("error", "Render Error", error);
 
           // Aggiungi alla cronologia come fallito - usa la variabile locale renderStartTime
           const historyItem = await createHistoryItem(
@@ -532,22 +820,6 @@ const RenderPanel: React.FC<RenderPanelProps> = ({
         });
       }
     }
-  };
-
-  const handleReset = () => {
-    setIsRendering(false);
-    setProgress(0);
-    setCurrentFrame(0);
-    setTotalFrames(0);
-    setStartTime(null);
-    setElapsedTime(0);
-    setMemoryUsage(0);
-    setPeakMemory(0);
-    setCurrentSample(0);
-    setTotalSamples(0);
-    setInCompositing(false);
-    setCompositingOperation("");
-    setCurrentProcessId(null);
   };
 
   const handleAddToQueue = () => {
@@ -694,7 +966,7 @@ const RenderPanel: React.FC<RenderPanelProps> = ({
                     Stop
                   </Button>
                   <Button
-                    onClick={handleReset}
+                    onClick={resetState}
                     disabled={isRendering}
                     variant="ghost"
                     color="warning"
@@ -752,8 +1024,41 @@ const RenderPanel: React.FC<RenderPanelProps> = ({
                 </Sheet>
               </div>
 
-              <div className="space-y-2">
-                <div className="flex justify-between items-center gap-4">
+              <div className="relative">
+                {/* Waiting to Start Overlay */}
+                {!isRendering && !renderCompleted && (
+                  <div className="absolute inset-0 z-50 backdrop-blur-sm bg-background/40 rounded-lg flex items-center justify-center">
+                    <div className="text-center">
+                      <div className="text-3xl font-bold bg-gradient-to-r from-gray-400 via-gray-500 to-gray-600 bg-clip-text text-transparent">
+                        Waiting to start...
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Warm-up Overlay */}
+                {isWarmingUp && (
+                  <div className="absolute inset-0 z-50 backdrop-blur-md bg-background/50 rounded-lg flex items-center justify-center">
+                    <div className="text-center">
+                      <div className="text-3xl font-bold bg-gradient-to-r from-red-500 via-orange-500 to-yellow-500 bg-clip-text text-transparent animate-pulse">
+                        Warming up scene...
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Render Completed Overlay */}
+                {renderCompleted && (
+                  <div className="absolute inset-0 z-50 backdrop-blur-sm bg-background/40 rounded-lg flex items-center justify-center">
+                    <div className="text-center">
+                      <div className="text-3xl font-bold bg-gradient-to-r from-green-500 via-emerald-500 to-teal-500 bg-clip-text text-transparent">
+                        Render Completed
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex justify-between items-center gap-4 mb-4">
                   <div className="flex flex-col bg-neutral-950 p-2 rounded-md gap-2 w-full">
                     <span className="text-sm text-muted-foreground flex items-center gap-2">
                       <Timer className="h-4 w-4" />
@@ -784,8 +1089,9 @@ const RenderPanel: React.FC<RenderPanelProps> = ({
                     </span>
                   </div>
                 </div>
-                {totalSamples > 0 ? (
-                  <div className="flex flex-col bg-neutral-950 p-2 rounded-md gap-2 w-full">
+                {/* Samples Progress - Only show if detected and not completed */}
+                {!renderCompleted && samplesDetected && totalSamples > 0 && (
+                  <div className="flex flex-col bg-neutral-950 p-2 rounded-md gap-2 w-full mb-4">
                     <span className="text-sm text-muted-foreground flex items-center gap-2">
                       <Layers className="h-4 w-4" />
                       Samples
@@ -799,16 +1105,36 @@ const RenderPanel: React.FC<RenderPanelProps> = ({
                       variant="success"
                     />
                   </div>
-                ) : (
-                  <div className="flex flex-col bg-neutral-950 p-2 rounded-md gap-2 w-full">
+                )}
+
+                {/* Tiles Progress - Blender 5.x */}
+                {totalTiles > 0 && (
+                  <div className="flex flex-col bg-neutral-950 p-2 rounded-md gap-2 w-full mb-4">
                     <span className="text-sm text-muted-foreground flex items-center gap-2">
                       <Layers className="h-4 w-4" />
-                      Samples
+                      Tiles
                     </span>
                     <span className="text-base font-medium">
-                      Waiting for samples...
+                      {currentTile}/{totalTiles}
                     </span>
-                    <Progress value={0} className="h-1" variant="default" />
+                    <Progress
+                      value={(currentTile / totalTiles) * 100}
+                      className="h-2"
+                      variant="success"
+                    />
+                  </div>
+                )}
+
+                {/* Remaining Time - Blender 5.x - Only show if not completed */}
+                {!renderCompleted && remainingTime && (
+                  <div className="flex flex-col bg-neutral-950 p-2 rounded-md gap-2 w-full mb-4">
+                    <span className="text-sm text-muted-foreground flex items-center gap-2">
+                      <Clock className="h-4 w-4" />
+                      Remaining
+                    </span>
+                    <span className="text-base font-medium">
+                      {remainingTime}
+                    </span>
                   </div>
                 )}
               </div>

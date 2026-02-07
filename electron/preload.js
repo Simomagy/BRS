@@ -85,7 +85,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Render Output APIs
   getRenderOutputs: () => ipcRenderer.invoke('getRenderOutputs'),
   readImageAsBase64: (filePath) => ipcRenderer.invoke('read-image-as-base64', filePath),
-  openRenderOutputWindow: () => ipcRenderer.invoke('open-render-output-window')
+  openRenderOutputWindow: () => ipcRenderer.invoke('open-render-output-window'),
+
+  // Render Manager APIs
+  getActiveProcesses: () => ipcRenderer.invoke('get-active-processes')
 });
 
 console.log('Electron API exposed to window');

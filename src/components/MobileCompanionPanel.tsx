@@ -17,6 +17,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Settings,
+  Server,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -187,7 +188,7 @@ export default function MobileCompanionPanel() {
       if (result.success && result.status) {
         setServerStatus(result.status);
         toast.success("Server Started", {
-          description: "Mobile Companion Server is now running.",
+          description: "Mobile/Blender Companion Server is now running.",
         });
         loadPairedDevices();
         loadConnectedDevices();
@@ -199,7 +200,7 @@ export default function MobileCompanionPanel() {
     } catch (error) {
       console.error("Error starting server:", error);
       toast.error("Error", {
-        description: "Failed to start the mobile companion server.",
+        description: "Failed to start the mobile/blender companion server.",
       });
     } finally {
       setIsLoading(false);
@@ -216,7 +217,7 @@ export default function MobileCompanionPanel() {
         setPairingCodeExpiry(null);
         setShowPairingDialog(false);
         toast.success("Server Stopped", {
-          description: "Mobile Companion Server has been stopped.",
+          description: "Mobile/Blender Companion Server has been stopped.",
         });
       } else {
         toast.error("Failed to Stop Server", {
@@ -226,7 +227,7 @@ export default function MobileCompanionPanel() {
     } catch (error) {
       console.error("Error stopping server:", error);
       toast.error("Error", {
-        description: "Failed to stop the mobile companion server.",
+        description: "Failed to stop the mobile/blender companion server.",
       });
     } finally {
       setIsLoading(false);
@@ -294,7 +295,7 @@ export default function MobileCompanionPanel() {
   const handleGeneratePairingCode = async () => {
     if (!serverStatus.isRunning) {
       toast.error("Server Not Running", {
-        description: "Please start the mobile companion server first.",
+        description: "Please start the mobile/blender companion server first.",
       });
       return;
     }
@@ -371,8 +372,8 @@ export default function MobileCompanionPanel() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Smartphone className="h-5 w-5" />
-            Mobile Companion Server
+            <Server className="h-5 w-5" />
+            Server Status
           </CardTitle>
         </CardHeader>
         <CardContent>

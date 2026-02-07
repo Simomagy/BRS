@@ -105,7 +105,7 @@ const BlenderPathSelector: React.FC<BlenderPathSelectorProps> = ({
     <div className="flex items-center gap-2">
       {availableVersions.length > 0 ? (
         <Select value={value} onValueChange={handleVersionSelect}>
-          <SelectTrigger className="w-[300px]">
+          <SelectTrigger className="w-[150px]">
             <SelectValue placeholder="Select Blender version" />
           </SelectTrigger>
           <SelectContent>

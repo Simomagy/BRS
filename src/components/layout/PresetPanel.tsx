@@ -49,6 +49,37 @@ const PresetPanel: React.FC<PresetPanelProps> = ({
       await loadPresets();
     };
     init();
+
+    // Listen for external preset updates (e.g., from Blender addon)
+    if (window.electronAPI && window.electronAPI.on) {
+      window.electronAPI.on('preset-updated', async (data: any) => {
+        console.log('Preset updated via external API:', data);
+        await loadPresets(); // Refresh preset list
+        toast.info("Preset updated", {
+          description: `Preset "${data.preset.name}" was ${data.isNew ? 'created' : 'updated'} via external API.`,
+        });
+      });
+
+      window.electronAPI.on('preset-deleted', async (data: any) => {
+        console.log('Preset deleted via external API:', data);
+        await loadPresets(); // Refresh preset list
+        if (selectedPreset?.id === data.presetId) {
+          onPresetSelect(null); // Deselect if currently selected
+        }
+        toast.info("Preset deleted", {
+          description: "A preset was deleted via external API.",
+        });
+      });
+    }
+
+    // Cleanup listeners on unmount
+    return () => {
+      if (window.electronAPI && window.electronAPI.removeAllListeners) {
+        window.electronAPI.removeAllListeners('preset-updated');
+        window.electronAPI.removeAllListeners('preset-deleted');
+      }
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {

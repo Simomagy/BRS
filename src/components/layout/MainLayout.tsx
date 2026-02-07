@@ -48,9 +48,40 @@ const MainLayout: React.FC = () => {
   const { logs, addLog, clearLogs } = useLogBuffer();
   const [isLogPanelVisible, setIsLogPanelVisible] = useState(false);
   const [isMobileCompanionOpen, setIsMobileCompanionOpen] = useState(false);
+  const [externalProcessId, setExternalProcessId] = useState<string | null>(null);
 
   // Onboarding store hook
   const { showWizard, checkOnboardingStatus } = useOnboardingStore();
+
+  // Listen for external render started events (e.g., from Blender addon)
+  useEffect(() => {
+    if (window.electronAPI && window.electronAPI.on) {
+      window.electronAPI.on('external-render-started', async (data: any) => {
+        console.log('External render started:', data);
+        toast.success("Render Started", {
+          description: `A render was started from ${data.startedBy || 'external source'}`,
+        });
+
+        // Set the external process ID so RenderPanel can start listening
+        if (data.processId) {
+          setExternalProcessId(data.processId);
+          addLog({ timestamp: new Date().toISOString(), level: 'info', message: `External render started: ${data.processId}` });
+        }
+      });
+
+      // Also listen for generic render-started events
+      window.electronAPI.on('render-started', (data: any) => {
+        console.log('Render started (generic event):', data);
+      });
+    }
+
+    return () => {
+      if (window.electronAPI && window.electronAPI.removeAllListeners) {
+        window.electronAPI.removeAllListeners('external-render-started');
+        window.electronAPI.removeAllListeners('render-started');
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const initializeApp = async () => {
@@ -167,13 +198,14 @@ const MainLayout: React.FC = () => {
     }
 
     // Resolution Settings
-    if (settings.resolution_enabled) {
-      command += ` --render-output "${settings.resolution_x || 1920}x${
-        settings.resolution_y || 1080
-      }"`;
-      if (settings.resolution_percentage) {
-        command += ` --render-percentage ${settings.resolution_percentage}`;
-      }
+    // NOTE: Blender reads resolution from .blend file
+    // There are no direct CLI parameters for resolution X/Y
+    // Resolution must be set in the .blend file itself
+
+    // Optional: Use Python script for runtime resolution override
+    if (settings.resolution_enabled && (settings.resolution_x || settings.resolution_y || settings.resolution_percentage)) {
+      // For now, resolution comes from .blend file
+      // TODO: Implement Python script injection for resolution override
     }
 
     // Frame Settings
@@ -372,23 +404,23 @@ const MainLayout: React.FC = () => {
               </div>
               <div className="flex flex-col gap-2 bg-neutral-950 p-2 rounded-md border border-neutral-800">
                 <span className="text-xs text-muted-foreground">
-                  Mobile Companion
+                  Mobile/Blender Companion
                 </span>
                 <Dialog
                   open={isMobileCompanionOpen}
                   onOpenChange={setIsMobileCompanionOpen}
                 >
                   <DialogTrigger asChild>
-                    <Button variant={"ghost"} title="Mobile Companion Server">
+                    <Button variant={"ghost"} title="Mobile/Blender Companion Server">
                       <Smartphone className="h-4 w-4" />
                       <span className="text-xs text-muted-foreground">
-                        Mobile Companion
+                        Server Settings
                       </span>
                     </Button>
                   </DialogTrigger>
                   <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
                     <DialogHeader>
-                      <DialogTitle>Mobile Companion Server</DialogTitle>
+                      <DialogTitle>Mobile/Blender Companion Server</DialogTitle>
                     </DialogHeader>
                     <MobileCompanionPanel />
                   </DialogContent>
@@ -416,6 +448,8 @@ const MainLayout: React.FC = () => {
                       command={command}
                       logs={logs}
                       onAddLog={handleAddLog}
+                      externalProcessId={externalProcessId}
+                      onExternalProcessHandled={() => setExternalProcessId(null)}
                       onToggleLogPanel={handleToggleLogPanel}
                       isLogPanelVisible={isLogPanelVisible}
                     />
